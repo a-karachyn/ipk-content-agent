@@ -11,7 +11,7 @@ const {
   getCaseDraft,
   clearCaseDraft,
 } = require('./redis');
-const { generateCasePost } = require('./agent');
+const { generateCasePost, generateNewsPost } = require('./agent');
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const MANAGER_ID = parseInt(process.env.MANAGER_CHAT_ID, 10);
@@ -83,6 +83,68 @@ bot.action('post_reject', async (ctx) => {
 });
 
 // ─── Команды ──────────────────────────────────────────────────────────────────
+
+bot.command('help', async (ctx) => {
+  if (ctx.from.id !== MANAGER_ID) return;
+  await ctx.replyWithHTML(
+    `<b>Команды IPK Content Agent</b>\n\n` +
+    `/generate — принудительно сгенерировать пост и отправить на согласование\n` +
+    `/case — запустить сбор данных для кейса вручную\n` +
+    `/status — текущее состояние агента и очередь постов\n` +
+    `/cancel — отменить текущую операцию (редактирование или сбор кейса)\n` +
+    `/help — этот список\n\n` +
+    `Посты генерируются автоматически каждые 2 дня в 10:00 МСК.\n` +
+    `Запрос данных для кейса — каждый понедельник в 9:00 МСК.`,
+  );
+});
+
+bot.command('generate', async (ctx) => {
+  if (ctx.from.id !== MANAGER_ID) return;
+
+  const pending = await getPendingPost();
+  if (pending) {
+    return ctx.reply('Уже есть пост на согласовании. Одобрите или отклоните его перед генерацией нового.');
+  }
+
+  await ctx.reply('Генерирую пост, подождите...');
+
+  try {
+    const { getPostCount, incrementPostCount } = require('./redis');
+    const count = await getPostCount();
+    const isCase = count % 2 === 0;
+    await incrementPostCount();
+
+    let postText;
+    if (isCase) {
+      const draft = await getCaseDraft();
+      if (draft && draft.task && draft.solution && draft.result) {
+        postText = await generateCasePost(draft.task, draft.solution, draft.result);
+        await clearCaseDraft();
+        await sendForApproval(postText, 'case');
+      } else {
+        postText = await generateNewsPost();
+        await sendForApproval(postText, 'news');
+      }
+    } else {
+      postText = await generateNewsPost();
+      await sendForApproval(postText, 'news');
+    }
+  } catch (err) {
+    console.error('[Bot] /generate error:', err);
+    await ctx.reply('Ошибка при генерации поста: ' + err.message);
+  }
+});
+
+bot.command('case', async (ctx) => {
+  if (ctx.from.id !== MANAGER_ID) return;
+
+  const state = await getManagerState();
+  if (state !== 'idle') {
+    return ctx.reply(`Сейчас выполняется другая операция (${state}). Сначала /cancel.`);
+  }
+
+  await startCaseCollection();
+});
 
 bot.command('cancel', async (ctx) => {
   if (ctx.from.id !== MANAGER_ID) return;
