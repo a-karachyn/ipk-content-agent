@@ -1,0 +1,23 @@
+services:
+  - type: worker
+    name: ipk-content-agent
+    env: node
+    region: frankfurt
+    plan: starter
+    buildCommand: npm install
+    startCommand: node src/index.js
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: MANAGER_CHAT_ID
+        sync: false
+      - key: TELEGRAM_CHANNEL_ID
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: MODEL
+        value: claude-sonnet-4-20250514
+      - key: NODE_ENV
+        value: production
