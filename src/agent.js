@@ -107,4 +107,4 @@ async function generateNewsPost() {
   return callClaudeWithSearch(prompt);
 }
 
-module.exports = { generateCasePost, generateNewsPost };
+module.exports = { generateCasePost, generateNewsPost, callClaudeSimple };
