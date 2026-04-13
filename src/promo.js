@@ -89,7 +89,7 @@ async function searchGroups() {
 Ищи именно группы/чаты (где можно писать участникам), а не каналы.
 Для каждой группы укажи название, ссылку (t.me/...), тематику из списка выше и краткое описание аудитории.
 
-Верни ТОЛЬКО JSON-массив без пояснений:
+Ответь ТОЛЬКО валидным JSON-массивом без какого-либо текста до или после. Никаких пояснений, никакого markdown, никаких \`\`\`json блоков. Только сырой JSON-массив:
 [
   {"name": "...", "link": "t.me/...", "topic": "...", "description": "..."},
   ...
@@ -115,10 +115,16 @@ async function searchGroups() {
         .join('\n')
         .trim();
 
-      const match = text.match(/\[[\s\S]*?\]/);
+      const clean = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      const match = clean.match(/\[[\s\S]*\]/);
       if (!match) throw new Error('Модель не вернула JSON-массив с группами');
 
-      const found = JSON.parse(match[0]);
+      let found;
+      try {
+        found = JSON.parse(match[0]);
+      } catch (e) {
+        throw new Error(`Ошибка парсинга JSON от модели: ${e.message}`);
+      }
       return found.map((g, idx) => ({
         id: `g_${Date.now()}_${idx}`,
         name: g.name || 'Без названия',
