@@ -24,9 +24,14 @@ const {
   generatePromoPost,
 } = require('./promo');
 
+const { registerMaxHandlers, handleMaxText } = require('./max-commands');
+
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const MANAGER_ID = parseInt(process.env.MANAGER_CHAT_ID, 10);
 const CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID;
+
+// Регистрируем MAX команды и callbacks (max-content-agent не имеет polling)
+registerMaxHandlers(bot);
 
 // ─── Keyboard для согласования ────────────────────────────────────────────────
 
@@ -332,6 +337,10 @@ async function startCaseCollection() {
 bot.on('text', async (ctx) => {
   if (ctx.from.id !== MANAGER_ID) return;
   if (ctx.message.text.startsWith('/')) return; // команды обрабатываются выше
+
+  // MAX state machine — если MAX-состояние активно, обрабатываем там
+  const maxHandled = await handleMaxText(ctx, bot);
+  if (maxHandled) return;
 
   const state = await getManagerState();
   const text = ctx.message.text.trim();

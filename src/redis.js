@@ -61,6 +61,47 @@ async function getManagerState() {
   return (await redis.get('agent:manager_state')) || 'idle';
 }
 
+// ─── MAX Content: pending post (из max-content-agent) ────────────────────────
+
+async function getMaxPendingPost() {
+  const val = await redis.get('max_content:pending_post');
+  return val ? JSON.parse(val) : null;
+}
+
+async function setMaxPendingPost(post) {
+  await redis.set('max_content:pending_post', JSON.stringify(post));
+}
+
+async function clearMaxPendingPost() {
+  await redis.del('max_content:pending_post');
+}
+
+// ─── MAX Content: manager state ───────────────────────────────────────────────
+// States: idle | max_editing | max_collecting_task | max_collecting_solution
+//         max_collecting_result | max_confirming_promo | max_editing_promo
+
+async function getMaxManagerState() {
+  return (await redis.get('max_content:manager_state')) || 'idle';
+}
+
+async function setMaxManagerState(state) {
+  await redis.set('max_content:manager_state', state);
+}
+
+// ─── MAX Content: case draft ──────────────────────────────────────────────────
+
+async function setMaxCaseField(field, value) {
+  await redis.hset('max_content:case_draft', field, value);
+}
+
+async function getMaxCaseDraft() {
+  return redis.hgetall('max_content:case_draft');
+}
+
+async function clearMaxCaseDraft() {
+  await redis.del('max_content:case_draft');
+}
+
 module.exports = {
   redis,
   getPostCount,
@@ -73,4 +114,13 @@ module.exports = {
   clearCaseDraft,
   setManagerState,
   getManagerState,
+  // MAX content
+  getMaxPendingPost,
+  setMaxPendingPost,
+  clearMaxPendingPost,
+  getMaxManagerState,
+  setMaxManagerState,
+  setMaxCaseField,
+  getMaxCaseDraft,
+  clearMaxCaseDraft,
 };
