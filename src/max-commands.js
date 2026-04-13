@@ -33,7 +33,7 @@ const {
   searchGroups: searchMaxPromoGroups,
   generatePromoPost: generateMaxPromoPost,
   markGroupPublished: markMaxGroupPublished,
-} = require('../../max-content-agent/src/promo');
+} = require('./max-promo');
 
 const MANAGER_ID = parseInt(process.env.MANAGER_CHAT_ID, 10);
 
