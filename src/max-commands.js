@@ -52,12 +52,22 @@ function maxApprovalKeyboard() {
 
 function maxPromoApprovalKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('✅ Готово к публикации', 'max_promo_approve')],
+    [Markup.button.callback('✅ Опубликовать', 'max_promo_approve')],
     [
       Markup.button.callback('✏️ Редактировать', 'max_promo_edit'),
-      Markup.button.callback('⏭️ Следующее сообщество', 'max_promo_next'),
+      Markup.button.callback('⏭️ Следующий канал', 'max_promo_next'),
     ],
   ]);
+}
+
+function maxPromoPickKeyboard(groups) {
+  const rows = groups.map((g) => [
+    Markup.button.callback(
+      `${g.name}${g.topic ? ' · ' + g.topic : ''}`,
+      `max_promo_select:${g.id}`,
+    ),
+  ]);
+  return Markup.inlineKeyboard(rows);
 }
 
 // ─── Отправка на согласование (используется при ручной генерации) ─────────────
@@ -246,24 +256,34 @@ function registerMaxHandlers(bot) {
       return ctx.reply('База сообществ MAX пуста. Сначала запустите /max_promo для поиска.');
     }
 
-    const group = pickNextMaxPromoGroup(groups);
-    if (!group) {
+    const active = groups.filter((g) => g.status === 'active');
+    if (!active.length) {
       return ctx.reply('Нет активных сообществ. Проверьте список через /max_promo_list.');
     }
 
-    await ctx.reply(`Генерирую промо-пост для сообщества <b>${group.name}</b>...`, { parse_mode: 'HTML' });
+    // Сортируем по дате последней публикации (давние — первые), берём 5
+    const candidates = active
+      .sort((a, b) => {
+        if (!a.lastPublished && !b.lastPublished) return 0;
+        if (!a.lastPublished) return -1;
+        if (!b.lastPublished) return 1;
+        return new Date(a.lastPublished) - new Date(b.lastPublished);
+      })
+      .slice(0, 5);
 
-    try {
-      const postText = await generateMaxPromoPost(group);
-      await setMaxPromoPending({ text: postText, group });
-      await ctx.replyWithHTML(
-        `📣 <b>Промо-пост для MAX: ${group.name}</b>\n${group.link}\n\n${postText}`,
-        maxPromoApprovalKeyboard(),
-      );
-    } catch (err) {
-      console.error('[MaxBot] /max_promo_post error:', err);
-      await ctx.reply('Ошибка при генерации промо-поста: ' + err.message);
-    }
+    const lines = candidates
+      .map((g, i) => {
+        const date = g.lastPublished
+          ? new Date(g.lastPublished).toLocaleDateString('ru-RU')
+          : 'не публиковалось';
+        return `${i + 1}. <b>${g.name}</b>${g.topic ? ' · ' + g.topic : ''}\n   ${g.link || '—'} · ${date}`;
+      })
+      .join('\n\n');
+
+    await ctx.replyWithHTML(
+      `📣 <b>Выберите сообщество для промо-поста:</b>\n\n${lines}`,
+      maxPromoPickKeyboard(candidates),
+    );
   });
 
   // ── MAX Promo: список сообществ ───────────────────────────────────────────
@@ -293,6 +313,30 @@ function registerMaxHandlers(bot) {
 
   // ── MAX Promo: callbacks ──────────────────────────────────────────────────
 
+  bot.action(/^max_promo_select:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const groupId = ctx.match[1];
+
+    const groups = await getMaxPromoGroups();
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return ctx.reply('Сообщество не найдено в базе.');
+
+    await ctx.editMessageReplyMarkup(undefined);
+    await ctx.reply(`Генерирую промо-пост для «${group.name}»...`);
+
+    try {
+      const postText = await generateMaxPromoPost(group);
+      await setMaxPromoPending({ text: postText, group });
+      await ctx.replyWithHTML(
+        `📣 <b>${group.name}</b>\n${group.link || ''}\n\n${postText}`,
+        maxPromoApprovalKeyboard(),
+      );
+    } catch (err) {
+      console.error('[MaxBot] max_promo_select error:', err);
+      await ctx.reply('Ошибка при генерации промо-поста: ' + err.message);
+    }
+  });
+
   bot.action('max_promo_approve', async (ctx) => {
     await ctx.answerCbQuery();
     const pending = await getMaxPromoPending();
@@ -318,26 +362,26 @@ function registerMaxHandlers(bot) {
     const excludeId = pending?.group?.id || null;
 
     const groups = await getMaxPromoGroups();
-    const nextGroup = pickNextMaxPromoGroup(groups, excludeId);
-    if (!nextGroup) {
+    const active = groups.filter((g) => g.status === 'active' && g.id !== excludeId);
+    if (!active.length) {
       await clearMaxPromoPending();
       return ctx.reply('Больше нет активных сообществ MAX для выбора.');
     }
 
-    await ctx.reply(`Генерирую пост для следующего сообщества: <b>${nextGroup.name}</b>...`, { parse_mode: 'HTML' });
-    await ctx.editMessageReplyMarkup(undefined);
+    const candidates = active
+      .sort((a, b) => {
+        if (!a.lastPublished && !b.lastPublished) return 0;
+        if (!a.lastPublished) return -1;
+        if (!b.lastPublished) return 1;
+        return new Date(a.lastPublished) - new Date(b.lastPublished);
+      })
+      .slice(0, 5);
 
-    try {
-      const postText = await generateMaxPromoPost(nextGroup);
-      await setMaxPromoPending({ text: postText, group: nextGroup });
-      await ctx.replyWithHTML(
-        `📣 <b>Промо-пост для MAX: ${nextGroup.name}</b>\n${nextGroup.link}\n\n${postText}`,
-        maxPromoApprovalKeyboard(),
-      );
-    } catch (err) {
-      console.error('[MaxBot] max_promo_next error:', err);
-      await ctx.reply('Ошибка при генерации поста: ' + err.message);
-    }
+    await ctx.editMessageReplyMarkup(undefined);
+    await ctx.replyWithHTML(
+      `📣 <b>Выберите следующее сообщество:</b>`,
+      maxPromoPickKeyboard(candidates),
+    );
   });
 }
 
