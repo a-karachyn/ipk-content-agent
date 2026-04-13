@@ -2,10 +2,13 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { SYSTEM_PROMPT } = require('./prompts');
+const { callClaudeSimple } = require('./agent');
 const { redis } = require('./redis');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.MODEL || 'claude-sonnet-4-20250514';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const GROUPS_KEY = 'promo:groups';
 const PENDING_KEY = 'promo:pending_post';
@@ -133,6 +136,8 @@ async function searchGroups() {
     const toolUses = response.content.filter((b) => b.type === 'tool_use');
     if (!toolUses.length) break;
 
+    await sleep(4000);
+
     messages.push({
       role: 'user',
       content: toolUses.map((tu) => ({
@@ -149,45 +154,17 @@ async function searchGroups() {
 // ─── Claude: генерация промо-поста ───────────────────────────────────────────
 
 async function generatePromoPost(group) {
-  const prompt = `Напиши пост для публикации в Telegram-группе участником.
+  await sleep(3000);
 
-Группа: ${group.name}
-Тематика: ${group.topic}
-${group.description ? `Аудитория: ${group.description}` : ''}
+  const prompt = `Напиши экспертный пост (600–900 символов) для Telegram-группы "${group.name}" (${group.topic}).
 
-Задача: полезный экспертный пост для застройщиков и заказчиков строительства, который органично вписывается в эту группу.
+Аудитория: застройщики и заказчики строительства.
+Тема: почему экономия на проектировании пожарной безопасности срывает сдачу объекта и обходится дороже переделок.
+Раскрой одну боль: замечания ГПН/экспертизы, штрафы МЧС или риски при пожаре.
+Финал (2–3 строки): ненавязчиво упомяни @ipk_proekt и @IPK_zayvki_bot.
+Без хэштегов. Без рекламного тона. Не начинай с названия компании.`;
 
-Тема поста — почему качественное проектирование систем пожарной безопасности (сигнализация, оповещение, пожаротушение) критично для заказчика и застройщика. Раскрой одну или несколько из следующих точек боли:
-— Срыв сроков сдачи объекта из-за замечаний ГПН или экспертизы по разделу ПБ
-— Штрафы и предписания при вводе в эксплуатацию или плановых проверках МЧС
-— Отказ в прохождении государственной или негосударственной экспертизы
-— Риски при страховании объекта и претензии страховщиков при страховом случае
-— Репутационные и юридические последствия для застройщика при пожаре на объекте
-— Экономия на проектировании ПБ как ложная экономия: переделки на стадии монтажа обходятся в разы дороже
-
-Структура:
-— 80% поста: конкретный полезный контент (реальная ситуация из практики, цифры, последствия, нюансы нормативки с точки зрения заказчика)
-— Последние 2–3 строки: ненавязчивое упоминание канала @ipk_proekt и бота @IPK_zayvki_bot как источника материалов и для подачи заявок на проектирование
-
-Требования:
-— Стиль: практик делится опытом, без рекламного тона, без технического жаргона
-— Язык аудитории: застройщик, заказчик, инвестор — не монтажник и не проектировщик
-— Длина: 600–1000 символов
-— Без хэштегов (выглядят как спам в чужих группах)
-— Не начинать с названия компании`;
-
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 2048,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  return response.content
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim();
+  return callClaudeSimple(prompt);
 }
 
 module.exports = {
