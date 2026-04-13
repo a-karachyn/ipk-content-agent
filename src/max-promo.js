@@ -68,104 +68,76 @@ function pickNextGroup(groups, excludeId = null) {
   })[0];
 }
 
-// ─── Claude: поиск MAX сообществ ─────────────────────────────────────────────
+// ─── Статический список целевых площадок для исследования ────────────────────
+// MAX — молодой мессенджер, публичных сообществ пока мало.
+// Менеджер вручную находит реальные MAX-аккаунты и добавляет через /max_promo_add.
 
-const SEARCH_QUERIES = [
-  'застройщики девелоперы СПб MAX мессенджер сообщество',
-  'строительные компании генподряд MAX группа чат',
-  'проектировщики архитекторы строительство MAX сообщество',
-  'технадзор технический заказчик строительство MAX группа',
-  'BIM информационное моделирование строительство MAX чат',
-  'управляющие компании ЖКХ эксплуатация зданий MAX сообщество',
-  'тендеры госзакупки строительство 44-ФЗ MAX группа',
-  'пожарная безопасность СКУД инженерные системы зданий MAX сообщество',
-  'умный дом автоматизация зданий строительство MAX чат',
-  'недвижимость инвестиции коммерческая недвижимость СПб MAX группа',
+const SEED_TARGETS = [
+  // Крупные застройщики СПб
+  { name: 'ЛСР Недвижимость', category: 'застройщик', description: 'Один из крупнейших застройщиков СПб' },
+  { name: 'Setl Group', category: 'застройщик', description: 'Крупнейший застройщик Северо-Запада' },
+  { name: 'ПИК — Санкт-Петербург', category: 'застройщик', description: 'Федеральный застройщик, проекты в СПб' },
+  { name: 'Группа ЦДС', category: 'застройщик', description: 'Застройщик жилья в СПб и ЛО' },
+  { name: 'RBI (RBI Group)', category: 'застройщик', description: 'Застройщик бизнес- и премиум-класса СПб' },
+  { name: 'Группа Эталон', category: 'застройщик', description: 'Федеральный застройщик, крупные проекты в СПб' },
+  { name: 'КВС Группа', category: 'застройщик', description: 'Застройщик комфорт-класса в СПб и ЛО' },
+  { name: 'Строительный трест', category: 'застройщик', description: 'Застройщик и генподрядчик СПб' },
+  { name: 'Legenda Intelligent Development', category: 'застройщик', description: 'Застройщик smart-жилья в СПб' },
+  { name: 'Glorax Development', category: 'застройщик', description: 'Девелопер жилья и коммерческой недвижимости' },
+
+  // Генподрядчики и строительные компании
+  { name: 'Холдинг Адамант', category: 'девелопер/УК', description: 'Коммерческая недвижимость и ТРЦ СПб' },
+  { name: 'AAG (Агентство. Аналитика. Геодезия)', category: 'застройщик', description: 'Застройщик бизнес-класса СПб' },
+  { name: 'Бонава Санкт-Петербург', category: 'застройщик', description: 'Скандинавский застройщик в СПб' },
+  { name: 'ФСК (Федеральная Строительная Компания)', category: 'генподрядчик', description: 'Один из крупнейших генподрядчиков РФ' },
+  { name: 'Группа ЛенСпецСМУ', category: 'генподрядчик', description: 'Генподрядчик и застройщик СПб' },
+
+  // Профессиональные сообщества
+  { name: 'Союз строителей СПб', category: 'профсообщество', description: 'Отраслевой союз строительных компаний СПб' },
+  { name: 'НОСТРОЙ — Северо-Запад', category: 'профсообщество', description: 'Нац. объединение строителей, СЗФО' },
+  { name: 'НОПРИЗ — Северо-Запад', category: 'профсообщество', description: 'Нац. объединение проектировщиков, СЗФО' },
+  { name: 'BIM-сообщество СПб', category: 'BIM/цифровое', description: 'Специалисты по BIM и цифровому строительству' },
+  { name: 'Гильдия управляющих и девелоперов', category: 'профсообщество', description: 'ГУД — профсообщество девелоперов и УК' },
+
+  // Управляющие компании и эксплуатация
+  { name: 'Управляющая компания ЖКС', category: 'УК/ЖКХ', description: 'Крупная УК в СПб' },
+  { name: 'Лидер (УК)', category: 'УК/ЖКХ', description: 'Управление жилой и коммерческой недвижимостью' },
+  { name: 'Группа компаний ПСК', category: 'генподрядчик', description: 'Промышленное и гражданское строительство' },
+  { name: 'Технадзор СПб', category: 'технадзор', description: 'Сообщество специалистов технического надзора СПб' },
+  { name: 'Архитекторы СПб', category: 'архитекторы', description: 'Профессиональное сообщество архитекторов города' },
 ];
 
-async function searchGroupsByQuery(query) {
-  const prompt = `Найди 10 сообществ и групп в мессенджере MAX (max.ru) по теме: "${query}".
-Только сообщества где можно писать сообщения участникам.
-Верни JSON-массив из 10 элементов:
-[{"name":"...","link":"max.ru/...","topic":"...","description":"..."}]
-Только JSON, без пояснений.`;
-
-  const messages = [{ role: 'user', content: prompt }];
-
-  for (let i = 0; i < 6; i++) {
-    const response = await client.messages.create(
-      {
-        model: MODEL,
-        max_tokens: 2048,
-        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-        messages,
-      },
-      { headers: { 'anthropic-beta': 'web-search-2025-03-05' } },
-    );
-
-    if (response.stop_reason === 'end_turn') {
-      const text = response.content
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
-        .trim();
-
-      const match = text.match(/\[[\s\S]*\]/);
-      if (!match) return [];
-
-      try {
-        return JSON.parse(match[0]);
-      } catch {
-        return [];
-      }
-    }
-
-    messages.push({ role: 'assistant', content: response.content });
-
-    const toolUses = response.content.filter((b) => b.type === 'tool_use');
-    if (!toolUses.length) break;
-
-    messages.push({
-      role: 'user',
-      content: toolUses.map((tu) => ({
-        type: 'tool_result',
-        tool_use_id: tu.id,
-        content: [],
-      })),
-    });
-  }
-
-  return [];
+function getSeedTargets() {
+  return SEED_TARGETS.map((t, idx) => ({
+    id: `mg_seed_${idx}`,
+    name: t.name,
+    link: '',
+    topic: t.category,
+    description: t.description,
+    status: 'research',   // ещё не найдено в MAX — требует поиска менеджером
+    lastPublished: null,
+    publishNote: null,
+  }));
 }
 
-async function searchGroups() {
-  const results = await Promise.all(
-    SEARCH_QUERIES.map((query) => searchGroupsByQuery(query).catch(() => [])),
-  );
+async function addGroup(name, link, topic = '', description = '') {
+  const existing = await getGroups();
+  const existingLinks = new Set(existing.map((g) => g.link));
+  if (existingLinks.has(link)) return { added: false, total: existing.length };
 
-  const seenLinks = new Set();
-  const allGroups = [];
-
-  for (const found of results) {
-    for (const g of found) {
-      const link = (g.link || '').trim();
-      if (!link || seenLinks.has(link)) continue;
-      seenLinks.add(link);
-      allGroups.push({
-        id: `mg_${Date.now()}_${allGroups.length}`,
-        name: g.name || 'Без названия',
-        link,
-        topic: g.topic || '',
-        description: g.description || '',
-        status: 'active',
-        lastPublished: null,
-        publishNote: null,
-      });
-    }
-  }
-
-  if (!allGroups.length) throw new Error('Не найдено ни одного сообщества в MAX');
-  return allGroups;
+  const group = {
+    id: `mg_${Date.now()}`,
+    name,
+    link,
+    topic,
+    description,
+    status: 'active',
+    lastPublished: null,
+    publishNote: null,
+  };
+  const updated = [...existing, group];
+  await saveGroups(updated);
+  return { added: true, total: updated.length, group };
 }
 
 // ─── Claude: генерация промо-поста для MAX ───────────────────────────────────
@@ -196,11 +168,12 @@ module.exports = {
   getGroups,
   saveGroups,
   mergeGroups,
+  addGroup,
+  getSeedTargets,
   markGroupPublished,
   getPromoPending,
   setPromoPending,
   clearPromoPending,
   pickNextGroup,
-  searchGroups,
   generatePromoPost,
 };

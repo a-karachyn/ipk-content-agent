@@ -26,11 +26,12 @@ const { getPostCount, incrementPostCount, getCaseDraft } = require('./redis');
 const {
   getGroups: getMaxPromoGroups,
   mergeGroups: mergeMaxPromoGroups,
+  addGroup: addMaxPromoGroup,
+  getSeedTargets: getMaxPromoSeedTargets,
   getPromoPending: getMaxPromoPending,
   setPromoPending: setMaxPromoPending,
   clearPromoPending: clearMaxPromoPending,
   pickNextGroup: pickNextMaxPromoGroup,
-  searchGroups: searchMaxPromoGroups,
   generatePromoPost: generateMaxPromoPost,
   markGroupPublished: markMaxGroupPublished,
 } = require('./max-promo');
@@ -119,7 +120,8 @@ function registerMaxHandlers(bot) {
       `/max_case — запустить сбор данных для кейса\n` +
       `/max_status — состояние MAX агента\n\n` +
       `<b>Продвижение в MAX сообществах:</b>\n` +
-      `/max_promo — найти сообщества MAX через AI\n` +
+      `/max_promo — загрузить список целевых площадок для исследования\n` +
+      `/max_promo_add — добавить найденное MAX сообщество в базу\n` +
       `/max_promo_post — сгенерировать промо-пост для следующего сообщества\n` +
       `/max_promo_list — список сообществ с датами публикаций\n\n` +
       `/max_cancel — отменить текущую операцию\n` +
@@ -203,22 +205,38 @@ function registerMaxHandlers(bot) {
 
   bot.command('max_promo', async (ctx) => {
     if (ctx.from.id !== MANAGER_ID) return;
-    await ctx.reply('Ищу сообщества MAX через AI (10 параллельных запросов), подождите...');
     try {
-      const found = await searchMaxPromoGroups();
-      const { added, total } = await mergeMaxPromoGroups(found);
-      const lines = found
-        .slice(0, 20)
-        .map((g) => `• <b>${g.name}</b> — ${g.link}\n  <i>${g.topic}</i>`)
+      const seeds = getMaxPromoSeedTargets();
+      const { added, total } = await mergeMaxPromoGroups(seeds);
+      const lines = seeds
+        .slice(0, 15)
+        .map((g) => `• <b>${g.name}</b> — <i>${g.topic}</i>\n  ${g.description}`)
         .join('\n');
-      const more = found.length > 20 ? `\n...и ещё ${found.length - 20}` : '';
+      const more = seeds.length > 15 ? `\n...и ещё ${seeds.length - 15}` : '';
       await ctx.replyWithHTML(
-        `🔍 <b>Поиск завершён</b>\n\nНайдено: ${found.length}, добавлено новых: ${added}, всего в базе: ${total}\n\n${lines}${more}\n\nДля генерации промо-поста используйте /max_promo_post`,
+        `📋 <b>Целевые площадки MAX загружены</b>\n\n` +
+        `Добавлено новых: ${added}, всего в базе: ${total}\n\n` +
+        `${lines}${more}\n\n` +
+        `ℹ️ Статус <code>research</code> — нужно найти реальный MAX-аккаунт.\n` +
+        `Чтобы добавить найденное сообщество: /max_promo_add`,
       );
     } catch (err) {
       console.error('[MaxBot] /max_promo error:', err);
-      await ctx.reply('Ошибка при поиске сообществ MAX: ' + err.message);
+      await ctx.reply('Ошибка: ' + err.message);
     }
+  });
+
+  // ── MAX Promo: добавить сообщество вручную ────────────────────────────────
+
+  bot.command('max_promo_add', async (ctx) => {
+    if (ctx.from.id !== MANAGER_ID) return;
+    await setMaxManagerState('adding_max_promo');
+    await ctx.reply(
+      '➕ Отправьте данные сообщества MAX в формате:\n\n' +
+      '<code>Название\nmax.ru/ссылка\nКатегория (необязательно)</code>\n\n' +
+      '/max_cancel — отменить',
+      { parse_mode: 'HTML' },
+    );
   });
 
   // ── MAX Promo: генерация поста ────────────────────────────────────────────
@@ -371,6 +389,25 @@ async function handleMaxText(ctx, bot) {
     await setMaxCaseField('solution', text);
     await setMaxManagerState('max_collecting_result');
     await ctx.reply('Последний шаг — результат. Что получил заказчик? Укажите конкретику: сроки, экономию, факты.');
+    return true;
+  }
+
+  if (maxState === 'adding_max_promo') {
+    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (lines.length < 2) {
+      await ctx.reply('Нужно минимум 2 строки: название и ссылка. Попробуйте ещё раз или /max_cancel.');
+      return true;
+    }
+    const [name, link, topic = ''] = lines;
+    const result = await addMaxPromoGroup(name, link, topic);
+    await setMaxManagerState('idle');
+    if (!result.added) {
+      await ctx.reply(`⚠️ Сообщество с этой ссылкой уже есть в базе. Всего: ${result.total}`);
+    } else {
+      await ctx.replyWithHTML(
+        `✅ Добавлено: <b>${name}</b>\n${link}\nВсего в базе: ${result.total}\n\nДля генерации поста: /max_promo_post`,
+      );
+    }
     return true;
   }
 
