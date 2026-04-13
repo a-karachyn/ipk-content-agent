@@ -40,10 +40,9 @@ async function maxRequest(method, path, body = null) {
 }
 
 async function publishToMaxChannel(text) {
-  return maxRequest('POST', '/messages', {
-    chat_id: process.env.MAX_CHANNEL_ID,
-    text,
-  });
+  const chatId = process.env.MAX_CHANNEL_ID;
+  if (!chatId) throw new Error('MAX_CHANNEL_ID не задан');
+  return maxRequest('POST', `/messages?chat_id=${encodeURIComponent(chatId)}`, { text });
 }
 
 module.exports = { publishToMaxChannel };
