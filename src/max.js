@@ -4,7 +4,8 @@
  * MAX Bot API client — используется ipk-content-agent для публикации
  * в MAX канал после одобрения менеджером.
  *
- * Auth: Authorization: Bearer <token>
+ * Auth: access_token как query-параметр (?access_token=TOKEN)
+ *   — Bearer-заголовок API не принимает ("No access token")
  * Docs: https://dev.max.ru/docs
  */
 
@@ -18,13 +19,11 @@ function token() {
 
 async function maxRequest(method, path, body = null) {
   const url = new URL(path, BASE_URL);
+  url.searchParams.set('access_token', token());
 
   const opts = {
     method,
-    headers: {
-      'Authorization': `Bearer ${token()}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
   };
   if (body) opts.body = JSON.stringify(body);
 
