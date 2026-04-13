@@ -27,7 +27,7 @@ const {
   getGroups: getMaxPromoGroups,
   mergeGroups: mergeMaxPromoGroups,
   addGroup: addMaxPromoGroup,
-  getSeedTargets: getMaxPromoSeedTargets,
+  searchGroups: searchMaxPromoGroups,
   getPromoPending: getMaxPromoPending,
   setPromoPending: setMaxPromoPending,
   clearPromoPending: clearMaxPromoPending,
@@ -120,7 +120,7 @@ function registerMaxHandlers(bot) {
       `/max_case — запустить сбор данных для кейса\n` +
       `/max_status — состояние MAX агента\n\n` +
       `<b>Продвижение в MAX сообществах:</b>\n` +
-      `/max_promo — загрузить список целевых площадок для исследования\n` +
+      `/max_promo — найти сообщества в MAX через MAX API\n` +
       `/max_promo_add — добавить найденное MAX сообщество в базу\n` +
       `/max_promo_post — сгенерировать промо-пост для следующего сообщества\n` +
       `/max_promo_list — список сообществ с датами публикаций\n\n` +
@@ -205,24 +205,21 @@ function registerMaxHandlers(bot) {
 
   bot.command('max_promo', async (ctx) => {
     if (ctx.from.id !== MANAGER_ID) return;
+    await ctx.reply('Ищу сообщества в MAX по 15 ключевым словам параллельно...');
     try {
-      const seeds = getMaxPromoSeedTargets();
-      const { added, total } = await mergeMaxPromoGroups(seeds);
-      const lines = seeds
-        .slice(0, 15)
-        .map((g) => `• <b>${g.name}</b> — <i>${g.topic}</i>\n  ${g.description}`)
+      const found = await searchMaxPromoGroups();
+      const { added, total } = await mergeMaxPromoGroups(found);
+      const lines = found
+        .slice(0, 20)
+        .map((g) => `• <b>${g.name}</b>\n  ${g.link}`)
         .join('\n');
-      const more = seeds.length > 15 ? `\n...и ещё ${seeds.length - 15}` : '';
+      const more = found.length > 20 ? `\n...и ещё ${found.length - 20}` : '';
       await ctx.replyWithHTML(
-        `📋 <b>Целевые площадки MAX загружены</b>\n\n` +
-        `Добавлено новых: ${added}, всего в базе: ${total}\n\n` +
-        `${lines}${more}\n\n` +
-        `ℹ️ Статус <code>research</code> — нужно найти реальный MAX-аккаунт.\n` +
-        `Чтобы добавить найденное сообщество: /max_promo_add`,
+        `🔍 <b>Поиск завершён</b>\n\nНайдено: ${found.length}, добавлено новых: ${added}, всего в базе: ${total}\n\n${lines}${more}\n\nДля генерации промо-поста: /max_promo_post`,
       );
     } catch (err) {
       console.error('[MaxBot] /max_promo error:', err);
-      await ctx.reply('Ошибка: ' + err.message);
+      await ctx.reply('Ошибка при поиске в MAX: ' + err.message);
     }
   });
 

@@ -45,4 +45,4 @@ async function publishToMaxChannel(text) {
   return maxRequest('POST', `/messages?chat_id=${encodeURIComponent(chatId)}`, { text });
 }
 
-module.exports = { publishToMaxChannel };
+module.exports = { publishToMaxChannel, maxRequest };
