@@ -379,7 +379,7 @@ bot.on('text', async (ctx) => {
       await sendForApproval(postText, 'case');
     } catch (err) {
       console.error('[Bot] generateCasePost error:', err);
-      await ctx.reply('Ошибка при генерации кейса. Данные сохранены, попробуйте /status.');
+      await ctx.reply(`Ошибка при генерации кейса: ${err.message}\n\nДанные сохранены, попробуйте /generate позже.`);
     }
     return;
   }

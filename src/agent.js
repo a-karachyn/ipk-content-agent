@@ -4,7 +4,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { SYSTEM_PROMPT, casePostPrompt, newsPostPrompt } = require('./prompts');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = process.env.MODEL || 'claude-sonnet-4-5';
+const MODEL = process.env.MODEL || 'claude-sonnet-4-6';
 
 /**
  * Вызывает Claude с инструментом web_search и возвращает финальный текст.
@@ -65,18 +65,30 @@ async function callClaudeWithSearch(userPrompt) {
  * Генерирует пост без web_search (для кейсов с готовыми данными).
  */
 async function callClaudeSimple(userPrompt) {
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 2048,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: userPrompt }],
-  });
+  let response;
+  try {
+    response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 2048,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+  } catch (err) {
+    const detail = err?.error?.message || err?.message || String(err);
+    throw new Error(`Claude API error: ${detail}`);
+  }
 
-  return response.content
+  const text = response.content
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
     .join('\n')
     .trim();
+
+  if (!text) {
+    throw new Error(`Claude вернул пустой ответ (stop_reason: ${response.stop_reason})`);
+  }
+
+  return text;
 }
 
 /**
