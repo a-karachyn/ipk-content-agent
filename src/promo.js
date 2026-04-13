@@ -71,30 +71,48 @@ function pickNextGroup(groups, excludeId = null) {
 
 // ─── Claude: поиск Telegram-групп ────────────────────────────────────────────
 
-async function searchGroups() {
-  const prompt = `Найди актуальные Telegram-группы и чаты (не каналы) для профессиональной аудитории по темам:
+const SEARCH_QUERIES = [
+  'застройщики Санкт-Петербург чат',
+  'девелоперы недвижимость СПб группа',
+  'строительные компании СПб чат',
+  'генподряд строительство чат',
+  'проектировщики строительство группа',
+  'проектные организации СПб чат',
+  'архитекторы СПб группа',
+  'архитектура и проектирование чат',
+  'технадзор строительство группа',
+  'технический заказчик строительство чат',
+  'BIM проектирование группа',
+  'информационное моделирование BIM чат',
+  'управляющие компании ЖКХ группа',
+  'эксплуатация зданий ЖКХ чат',
+  'тендеры строительство госзакупки группа',
+  'капремонт строительство чат',
+  'недвижимость инвестиции СПб группа',
+  'инженерные системы здания чат',
+  'пожарная безопасность зданий группа',
+  'системы безопасности СКУД чат',
+  'умный дом автоматизация зданий группа',
+  'эвакуация пожаротушение здания чат',
+  'строительный контроль надзор группа',
+  'девелопмент коммерческая недвижимость чат',
+  'строительство жилых комплексов группа',
+];
 
-1. Пожарная безопасность — проектирование СПС, СОУЭ, систем пожаротушения, монтаж, нормативы МЧС
-2. СКУД, системы безопасности, интеграция охранных систем
-3. Строительство и проектирование в Санкт-Петербурге и СЗФО
-4. Экспертиза проектной документации — ГГЭ, негосударственная экспертиза, согласования
-
-Ищи именно группы/чаты (где можно писать участникам), а не каналы.
-Для каждой группы укажи название, ссылку (t.me/...), тематику из списка выше и краткое описание аудитории.
-
-Верни ТОЛЬКО JSON-массив без пояснений:
-[
-  {"name": "...", "link": "t.me/...", "topic": "...", "description": "..."},
-  ...
-]`;
+async function searchGroupsByQuery(query) {
+  const prompt = `Найди 5-10 Telegram-групп и чатов (не каналов) по теме: "${query}".
+Только группы где можно писать сообщения участникам.
+Верни JSON-массив:
+[{"name":"...","link":"t.me/...","topic":"...","description":"..."}]
+Только JSON, без пояснений.`;
 
   const messages = [{ role: 'user', content: prompt }];
 
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 6; i++) {
     const response = await client.messages.create(
       {
         model: MODEL,
-        max_tokens: 4096,
+        max_tokens: 2048,
         tools: [{ type: 'web_search_20250305', name: 'web_search' }],
         messages,
       },
@@ -108,20 +126,14 @@ async function searchGroups() {
         .join('\n')
         .trim();
 
-      const match = text.match(/\[[\s\S]*?\]/);
-      if (!match) throw new Error('Модель не вернула JSON-массив с группами');
+      const match = text.match(/\[[\s\S]*\]/);
+      if (!match) return [];
 
-      const found = JSON.parse(match[0]);
-      return found.map((g, idx) => ({
-        id: `g_${Date.now()}_${idx}`,
-        name: g.name || 'Без названия',
-        link: (g.link || '').trim(),
-        topic: g.topic || '',
-        description: g.description || '',
-        status: 'active',
-        lastPublished: null,
-        publishNote: null,
-      }));
+      try {
+        return JSON.parse(match[0]);
+      } catch {
+        return [];
+      }
     }
 
     messages.push({ role: 'assistant', content: response.content });
@@ -139,33 +151,56 @@ async function searchGroups() {
     });
   }
 
-  throw new Error('Превышен лимит итераций при поиске групп');
+  return [];
+}
+
+async function searchGroups() {
+  const allGroups = [];
+  const seenLinks = new Set();
+
+  for (const query of SEARCH_QUERIES) {
+    try {
+      const found = await searchGroupsByQuery(query);
+      for (const g of found) {
+        const link = (g.link || '').trim();
+        if (!link || seenLinks.has(link)) continue;
+        seenLinks.add(link);
+        allGroups.push({
+          id: `g_${Date.now()}_${allGroups.length}`,
+          name: g.name || 'Без названия',
+          link,
+          topic: g.topic || query,
+          description: g.description || '',
+          status: 'active',
+          lastPublished: null,
+          publishNote: null,
+        });
+      }
+    } catch {
+      // пропускаем неудачный запрос, продолжаем
+    }
+
+    // пауза между запросами чтобы не превышать rate limit
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+
+  if (!allGroups.length) throw new Error('Не найдено ни одной группы');
+  return allGroups;
 }
 
 // ─── Claude: генерация промо-поста ───────────────────────────────────────────
 
 async function generatePromoPost(group) {
-  const prompt = `Напиши пост для публикации в Telegram-группе участником.
-
-Группа: ${group.name}
-Тематика: ${group.topic}
-${group.description ? `Аудитория: ${group.description}` : ''}
-
-Задача: полезный экспертный пост, который органично вписывается в эту группу.
-
-Структура:
-— 80% поста: конкретный полезный контент по теме "${group.topic}" (совет, нюанс нормативки, разбор типовой ситуации, факт из практики)
-— Последние 2–3 строки: ненавязчивое упоминание канала @ipk_proekt и бота @IPK_zayvki_bot как источника материалов и для подачи заявок
-
-Требования:
-— Стиль: коллега делится опытом, без рекламного тона
-— Длина: 600–1000 символов
-— Без хэштегов (выглядят как спам в чужих группах)
-— Не начинать с названия компании`;
+  const prompt = `Напиши экспертный пост (600–900 символов) для Telegram-группы "${group.name}" (тема: ${group.topic}).
+Аудитория: застройщики и заказчики строительства.
+Тема: почему экономия на проектировании пожарной безопасности срывает сдачу объекта.
+Раскрой одну боль: замечания ГПН/экспертизы, штрафы МЧС или риски при пожаре.
+В конце (2–3 строки) упомяни @ipk_proekt и @IPK_zayvki_bot.
+Без хэштегов. Без рекламного тона. Не начинай с названия компании.`;
 
   const response = await client.messages.create({
     model: MODEL,
-    max_tokens: 2048,
+    max_tokens: 1024,
     system: SYSTEM_PROMPT,
     messages: [{ role: 'user', content: prompt }],
   });
