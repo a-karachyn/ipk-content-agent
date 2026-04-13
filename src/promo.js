@@ -72,37 +72,22 @@ function pickNextGroup(groups, excludeId = null) {
 // ─── Claude: поиск Telegram-групп ────────────────────────────────────────────
 
 const SEARCH_QUERIES = [
-  'застройщики Санкт-Петербург чат',
-  'девелоперы недвижимость СПб группа',
-  'строительные компании СПб чат',
-  'генподряд строительство чат',
-  'проектировщики строительство группа',
-  'проектные организации СПб чат',
-  'архитекторы СПб группа',
-  'архитектура и проектирование чат',
-  'технадзор строительство группа',
-  'технический заказчик строительство чат',
-  'BIM проектирование группа',
-  'информационное моделирование BIM чат',
-  'управляющие компании ЖКХ группа',
-  'эксплуатация зданий ЖКХ чат',
-  'тендеры строительство госзакупки группа',
-  'капремонт строительство чат',
-  'недвижимость инвестиции СПб группа',
-  'инженерные системы здания чат',
-  'пожарная безопасность зданий группа',
-  'системы безопасности СКУД чат',
-  'умный дом автоматизация зданий группа',
-  'эвакуация пожаротушение здания чат',
-  'строительный контроль надзор группа',
-  'девелопмент коммерческая недвижимость чат',
-  'строительство жилых комплексов группа',
+  'застройщики девелоперы СПб Telegram чат',
+  'строительные компании генподряд Telegram группа',
+  'проектировщики архитекторы строительство Telegram чат',
+  'технадзор технический заказчик строительство Telegram группа',
+  'BIM информационное моделирование строительство Telegram чат',
+  'управляющие компании ЖКХ эксплуатация зданий Telegram группа',
+  'тендеры госзакупки строительство 44-ФЗ Telegram чат',
+  'пожарная безопасность СКУД инженерные системы зданий Telegram группа',
+  'умный дом автоматизация зданий строительство Telegram чат',
+  'недвижимость инвестиции коммерческая недвижимость СПб Telegram группа',
 ];
 
 async function searchGroupsByQuery(query) {
-  const prompt = `Найди 5-10 Telegram-групп и чатов (не каналов) по теме: "${query}".
+  const prompt = `Найди 10 Telegram-групп и чатов (не каналов) по теме: "${query}".
 Только группы где можно писать сообщения участникам.
-Верни JSON-массив:
+Верни JSON-массив из 10 элементов:
 [{"name":"...","link":"t.me/...","topic":"...","description":"..."}]
 Только JSON, без пояснений.`;
 
@@ -155,33 +140,29 @@ async function searchGroupsByQuery(query) {
 }
 
 async function searchGroups() {
-  const allGroups = [];
+  const results = await Promise.all(
+    SEARCH_QUERIES.map((query) => searchGroupsByQuery(query).catch(() => [])),
+  );
+
   const seenLinks = new Set();
+  const allGroups = [];
 
-  for (const query of SEARCH_QUERIES) {
-    try {
-      const found = await searchGroupsByQuery(query);
-      for (const g of found) {
-        const link = (g.link || '').trim();
-        if (!link || seenLinks.has(link)) continue;
-        seenLinks.add(link);
-        allGroups.push({
-          id: `g_${Date.now()}_${allGroups.length}`,
-          name: g.name || 'Без названия',
-          link,
-          topic: g.topic || query,
-          description: g.description || '',
-          status: 'active',
-          lastPublished: null,
-          publishNote: null,
-        });
-      }
-    } catch {
-      // пропускаем неудачный запрос, продолжаем
+  for (const found of results) {
+    for (const g of found) {
+      const link = (g.link || '').trim();
+      if (!link || seenLinks.has(link)) continue;
+      seenLinks.add(link);
+      allGroups.push({
+        id: `g_${Date.now()}_${allGroups.length}`,
+        name: g.name || 'Без названия',
+        link,
+        topic: g.topic || '',
+        description: g.description || '',
+        status: 'active',
+        lastPublished: null,
+        publishNote: null,
+      });
     }
-
-    // пауза между запросами чтобы не превышать rate limit
-    await new Promise((r) => setTimeout(r, 3000));
   }
 
   if (!allGroups.length) throw new Error('Не найдено ни одной группы');
