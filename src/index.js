@@ -14,6 +14,15 @@ async function main() {
   // Запускаем планировщик
   startScheduler();
 
+  // Сбрасываем webhook и активную polling-сессию перед стартом,
+  // чтобы избежать 409 Conflict при редеплое на Render.
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+    console.log('[App] Webhook сброшен, очередь обновлений очищена');
+  } catch (err) {
+    console.warn('[App] deleteWebhook failed (non-fatal):', err.message);
+  }
+
   // Запускаем бота
   bot.launch({
     allowedUpdates: ['message', 'callback_query'],
