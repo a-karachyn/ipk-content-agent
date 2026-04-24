@@ -1,7 +1,7 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { SYSTEM_PROMPT, casePostPrompt, newsPostPrompt } = require('./prompts');
+const { SYSTEM_PROMPT, casePostPrompt, newsPostPrompt, normativePostPrompt, trendPostPrompt, historyPostPrompt } = require('./prompts');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.MODEL || 'claude-sonnet-4-6';
@@ -107,4 +107,22 @@ async function generateNewsPost() {
   return callClaudeWithSearch(prompt);
 }
 
-module.exports = { generateCasePost, generateNewsPost, callClaudeSimple };
+/**
+ * Генерирует пост по одному из трёх форматов контента:
+ * 1 — НОРМАТИВ, 2 — ТРЕНДЫ, 3 — ИСТОРИЯ
+ */
+async function generateFormatPost(format) {
+  let prompt;
+  if (format === 1) prompt = normativePostPrompt();
+  else if (format === 2) prompt = trendPostPrompt();
+  else prompt = historyPostPrompt();
+  return callClaudeWithSearch(prompt);
+}
+
+const FORMAT_LABELS = {
+  1: 'Норматив',
+  2: 'Тренды',
+  3: 'История',
+};
+
+module.exports = { generateCasePost, generateNewsPost, generateFormatPost, FORMAT_LABELS, callClaudeSimple };

@@ -102,6 +102,32 @@ async function clearMaxCaseDraft() {
   await redis.del('max_content:case_draft');
 }
 
+// ─── Content format counter (чередование 1→2→3→1...) ─────────────────────────
+
+async function getFormatCounter() {
+  const val = await redis.get('content:post_format_counter');
+  return parseInt(val || '0', 10);
+}
+
+async function incrementFormatCounter() {
+  return redis.incr('content:post_format_counter');
+}
+
+// ─── Approved promo post (одобрен, ждёт публикации в 11:00 или 20:00) ────────
+
+async function getApprovedPromo() {
+  const val = await redis.get('promo:approved_post');
+  return val ? JSON.parse(val) : null;
+}
+
+async function setApprovedPromo(data) {
+  await redis.set('promo:approved_post', JSON.stringify(data));
+}
+
+async function clearApprovedPromo() {
+  await redis.del('promo:approved_post');
+}
+
 module.exports = {
   redis,
   getPostCount,
@@ -114,6 +140,13 @@ module.exports = {
   clearCaseDraft,
   setManagerState,
   getManagerState,
+  // Format counter
+  getFormatCounter,
+  incrementFormatCounter,
+  // Approved promo
+  getApprovedPromo,
+  setApprovedPromo,
+  clearApprovedPromo,
   // MAX content
   getMaxPendingPost,
   setMaxPendingPost,

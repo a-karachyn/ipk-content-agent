@@ -11,7 +11,7 @@ const {
   getCaseDraft,
   clearCaseDraft,
 } = require('./redis');
-const { generateCasePost, generateNewsPost } = require('./agent');
+const { generateCasePost, generateNewsPost, generateFormatPost, FORMAT_LABELS } = require('./agent');
 const {
   getGroups,
   mergeGroups,
@@ -19,6 +19,9 @@ const {
   getPromoPending,
   setPromoPending,
   clearPromoPending,
+  getApprovedPromoPending,
+  setApprovedPromoPending,
+  clearApprovedPromoPending,
   pickNextGroup,
   searchGroups,
   generatePromoPost,
@@ -57,19 +60,65 @@ function promoApprovalKeyboard() {
   ]);
 }
 
+// ─── Keyboard для ежедневного промо-согласования ──────────────────────────────
+
+function dailyPromoApprovalKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('✅ Одобрить', 'promo_daily_approve')],
+    [
+      Markup.button.callback('✏️ Редактировать', 'promo_daily_edit'),
+      Markup.button.callback('⏭️ Пропустить канал', 'promo_daily_skip'),
+    ],
+  ]);
+}
+
 // ─── Отправка поста на согласование ──────────────────────────────────────────
+
+const POST_TYPE_LABELS = {
+  case: 'Кейс',
+  format_1: 'Норматив',
+  format_2: 'Тренды',
+  format_3: 'История',
+  news: 'Новость/Совет',
+};
 
 async function sendForApproval(postText, postType) {
   await setPendingPost({ text: postText, type: postType });
+  const label = POST_TYPE_LABELS[postType] || postType;
 
   await bot.telegram.sendMessage(
     MANAGER_ID,
-    `📝 <b>Новый пост для канала (${postType === 'case' ? 'Кейс' : 'Новость/Совет'})</b>\n\n${postText}`,
-    {
-      parse_mode: 'HTML',
-      ...approvalKeyboard(),
-    },
+    `📝 <b>Новый пост для канала (${label})</b>\n\n${postText}`,
+    { parse_mode: 'HTML', ...approvalKeyboard() },
   );
+}
+
+// ─── Отправка ежедневного промо менеджеру на согласование ────────────────────
+
+async function sendDailyPromoMessage(group, postText) {
+  await setPromoPending({ text: postText, group, source: 'daily' });
+  await bot.telegram.sendMessage(
+    MANAGER_ID,
+    `📣 <b>Ежедневный промо-пост для канала</b>\n<b>${group.name}</b>\n${group.link}\n\n${postText}`,
+    { parse_mode: 'HTML', ...dailyPromoApprovalKeyboard() },
+  );
+}
+
+// ─── Отправка одобренного промо-текста для ручной публикации ─────────────────
+
+async function sendApprovedPromoText() {
+  const approved = await getApprovedPromoPending();
+  if (!approved) return;
+
+  const { text, group } = approved;
+  await bot.telegram.sendMessage(
+    MANAGER_ID,
+    `📋 <b>Готово к публикации в канале</b>\n<b>${group.name}</b> | ${group.link}\n\nСкопируйте и опубликуйте:\n\n${text}`,
+    { parse_mode: 'HTML' },
+  );
+
+  await markGroupPublished(group.id, 'auto');
+  await clearApprovedPromoPending();
 }
 
 // ─── Публикация в канал ───────────────────────────────────────────────────────
@@ -141,25 +190,21 @@ bot.command('generate', async (ctx) => {
   await ctx.reply('Генерирую пост, подождите...');
 
   try {
-    const { getPostCount, incrementPostCount } = require('./redis');
-    const count = await getPostCount();
-    const isCase = count % 2 === 0;
-    await incrementPostCount();
+    const { getFormatCounter, incrementFormatCounter } = require('./redis');
 
-    let postText;
-    if (isCase) {
-      const draft = await getCaseDraft();
-      if (draft && draft.task && draft.solution && draft.result) {
-        postText = await generateCasePost(draft.task, draft.solution, draft.result);
-        await clearCaseDraft();
-        await sendForApproval(postText, 'case');
-      } else {
-        postText = await generateNewsPost();
-        await sendForApproval(postText, 'news');
-      }
+    // Если есть готовый кейс — публикуем его приоритетно
+    const draft = await getCaseDraft();
+    if (draft && draft.task && draft.solution && draft.result) {
+      const postText = await generateCasePost(draft.task, draft.solution, draft.result);
+      await clearCaseDraft();
+      await sendForApproval(postText, 'case');
     } else {
-      postText = await generateNewsPost();
-      await sendForApproval(postText, 'news');
+      // Чередуем три формата: 1-НОРМАТИВ, 2-ТРЕНДЫ, 3-ИСТОРИЯ
+      const counter = await getFormatCounter();
+      const format = (counter % 3) + 1;
+      await incrementFormatCounter();
+      const postText = await generateFormatPost(format);
+      await sendForApproval(postText, `format_${format}`);
     }
   } catch (err) {
     console.error('[Bot] /generate error:', err);
@@ -301,6 +346,57 @@ bot.action('promo_next', async (ctx) => {
   }
 });
 
+// ─── Callbacks: ежедневное промо-согласование ─────────────────────────────────
+
+bot.action('promo_daily_approve', async (ctx) => {
+  await ctx.answerCbQuery();
+  const pending = await getPromoPending();
+  if (!pending) return ctx.reply('Нет промо-поста в очереди.');
+
+  await setApprovedPromoPending(pending);
+  await clearPromoPending();
+  await ctx.editMessageReplyMarkup(undefined);
+  await ctx.reply(
+    `✅ Промо-пост одобрен! Будет отправлен на публикацию в 11:00 или 20:00 МСК.\nКанал: <b>${pending.group.name}</b>`,
+    { parse_mode: 'HTML' },
+  );
+});
+
+bot.action('promo_daily_edit', async (ctx) => {
+  await ctx.answerCbQuery();
+  await setManagerState('editing_promo');
+  await ctx.editMessageReplyMarkup(undefined);
+  await ctx.reply('✏️ Отправьте отредактированный текст промо-поста.\n\n/cancel — отменить.');
+});
+
+bot.action('promo_daily_skip', async (ctx) => {
+  await ctx.answerCbQuery();
+  const pending = await getPromoPending();
+  const excludeId = pending?.group?.id || null;
+
+  await clearPromoPending();
+  await ctx.editMessageReplyMarkup(undefined);
+
+  const groups = await getGroups();
+  const nextGroup = pickNextGroup(groups, excludeId);
+  if (!nextGroup) {
+    return ctx.reply('Больше нет активных групп. База обновится в следующий понедельник.');
+  }
+
+  await ctx.reply(`Генерирую пост для следующей группы: <b>${nextGroup.name}</b>...`, { parse_mode: 'HTML' });
+  try {
+    const postText = await generatePromoPost(nextGroup);
+    await setPromoPending({ text: postText, group: nextGroup, source: 'daily' });
+    await ctx.replyWithHTML(
+      `📣 <b>Промо-пост для канала ${nextGroup.name}</b>\n${nextGroup.link}\n\n${postText}`,
+      dailyPromoApprovalKeyboard(),
+    );
+  } catch (err) {
+    console.error('[Bot] promo_daily_skip error:', err);
+    await ctx.reply('Ошибка при генерации поста: ' + err.message);
+  }
+});
+
 bot.command('cancel', async (ctx) => {
   if (ctx.from.id !== MANAGER_ID) return;
   await setManagerState('idle');
@@ -424,4 +520,4 @@ bot.on('text', async (ctx) => {
   await ctx.reply('Используйте кнопки одобрения или дождитесь очередного поста от агента.');
 });
 
-module.exports = { bot, sendForApproval, startCaseCollection };
+module.exports = { bot, sendForApproval, startCaseCollection, sendDailyPromoMessage, sendApprovedPromoText };

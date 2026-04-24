@@ -9,6 +9,7 @@ const MODEL = process.env.MODEL || 'claude-sonnet-4-20250514';
 
 const GROUPS_KEY = 'promo:groups';
 const PENDING_KEY = 'promo:pending_post';
+const APPROVED_KEY = 'promo:approved_post';
 
 // ─── Redis: база групп ────────────────────────────────────────────────────────
 
@@ -54,6 +55,32 @@ async function setPromoPending(data) {
 
 async function clearPromoPending() {
   await redis.del(PENDING_KEY);
+}
+
+// ─── Redis: approved promo post (одобрен, ждёт публикации) ───────────────────
+
+async function getApprovedPromoPending() {
+  const { getApprovedPromo } = require('./redis');
+  return getApprovedPromo();
+}
+
+async function setApprovedPromoPending(data) {
+  const { setApprovedPromo } = require('./redis');
+  return setApprovedPromo(data);
+}
+
+async function clearApprovedPromoPending() {
+  const { clearApprovedPromo } = require('./redis');
+  return clearApprovedPromo();
+}
+
+// ─── Обновление базы групп (для понедельничного cron) ─────────────────────────
+
+async function updatePromoGroups() {
+  const found = await searchGroups();
+  const result = await mergeGroups(found);
+  console.log(`[Promo] Обновление базы групп: найдено ${found.length}, добавлено ${result.added}, всего ${result.total}`);
+  return result;
 }
 
 // ─── Выбор следующей группы ───────────────────────────────────────────────────
@@ -201,6 +228,10 @@ module.exports = {
   getPromoPending,
   setPromoPending,
   clearPromoPending,
+  getApprovedPromoPending,
+  setApprovedPromoPending,
+  clearApprovedPromoPending,
+  updatePromoGroups,
   pickNextGroup,
   searchGroups,
   generatePromoPost,
