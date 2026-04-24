@@ -10,6 +10,8 @@ const {
   setCaseField,
   getCaseDraft,
   clearCaseDraft,
+  setPromoSearchCache,
+  getPromoSearchCache,
 } = require('./redis');
 const { generateCasePost, generateNewsPost, generateFormatPost, FORMAT_LABELS } = require('./agent');
 const {
@@ -35,6 +37,28 @@ const CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID;
 
 // Регистрируем MAX команды и callbacks (max-content-agent не имеет polling)
 registerMaxHandlers(bot);
+
+// ─── Пагинация групп ──────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 10;
+
+function truncateName(name) {
+  return name.length > 50 ? name.slice(0, 47) + '...' : name;
+}
+
+function formatGroupsPage(groups, page) {
+  const start = page * PAGE_SIZE;
+  const slice = groups.slice(start, start + PAGE_SIZE);
+  return slice.map((g) => `• <b>${truncateName(g.name)}</b> — ${g.link}`).join('\n');
+}
+
+function pageKeyboard(page, total, callbackPrefix) {
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const buttons = [];
+  if (page > 0) buttons.push(Markup.button.callback('◀️ Предыдущие 10', `${callbackPrefix}:${page - 1}`));
+  if (page < totalPages - 1) buttons.push(Markup.button.callback('Следующие 10 ▶️', `${callbackPrefix}:${page + 1}`));
+  return buttons.length ? Markup.inlineKeyboard([buttons]) : undefined;
+}
 
 // ─── Keyboard для согласования ────────────────────────────────────────────────
 
@@ -231,14 +255,33 @@ bot.command('promo', async (ctx) => {
   try {
     const found = await searchGroups();
     const { added, total } = await mergeGroups(found);
-    const lines = found.map((g) => `• <b>${g.name}</b> — ${g.link}\n  <i>${g.topic}</i>`).join('\n');
-    await ctx.replyWithHTML(
-      `🔍 <b>Поиск завершён</b>\n\nНайдено: ${found.length}, добавлено новых: ${added}, всего в базе: ${total}\n\n${lines}\n\nДля генерации промо-поста используйте /promo_post`,
-    );
+    await setPromoSearchCache(found);
+
+    const page = 0;
+    const text =
+      `🔍 <b>Поиск завершён</b>\n` +
+      `Найдено: ${found.length}, добавлено новых: ${added}, всего в базе: ${total}\n\n` +
+      formatGroupsPage(found, page) +
+      `\n\nДля генерации промо-поста: /promo_post`;
+    const keyboard = pageKeyboard(page, found.length, 'promo_search_page');
+    await ctx.replyWithHTML(text, keyboard);
   } catch (err) {
     console.error('[Bot] /promo error:', err);
     await ctx.reply('Ошибка при поиске групп: ' + err.message);
   }
+});
+
+bot.action(/^promo_search_page:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const page = parseInt(ctx.match[1], 10);
+  const found = await getPromoSearchCache();
+  if (!found.length) return ctx.reply('Результаты поиска устарели. Запустите /promo снова.');
+
+  const text =
+    `🔍 <b>Результаты поиска</b> (стр. ${page + 1}/${Math.ceil(found.length / PAGE_SIZE)})\n\n` +
+    formatGroupsPage(found, page);
+  const keyboard = pageKeyboard(page, found.length, 'promo_search_page');
+  await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
 });
 
 bot.command('promo_post', async (ctx) => {
@@ -281,20 +324,25 @@ bot.command('promo_list', async (ctx) => {
     return ctx.reply('База групп пуста. Запустите /promo для поиска групп.');
   }
 
-  const formatDate = (iso) => {
-    if (!iso) return 'не публиковалась';
-    const d = new Date(iso);
-    return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
-  };
+  const page = 0;
+  const text =
+    `📋 <b>База групп для продвижения (${groups.length})</b>\n\n` +
+    formatGroupsPage(groups, page);
+  const keyboard = pageKeyboard(page, groups.length, 'promo_list_page');
+  await ctx.replyWithHTML(text, keyboard);
+});
 
-  const lines = groups.map((g, i) => {
-    const status = g.status === 'active' ? '🟢' : '⏸️';
-    return `${status} ${i + 1}. <b>${g.name}</b>\n   ${g.link}\n   <i>${g.topic}</i>\n   Последняя публикация: ${formatDate(g.lastPublished)}`;
-  });
+bot.action(/^promo_list_page:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const page = parseInt(ctx.match[1], 10);
+  const groups = await getGroups();
+  if (!groups.length) return ctx.reply('База групп пуста.');
 
-  await ctx.replyWithHTML(
-    `📋 <b>База групп для продвижения (${groups.length})</b>\n\n` + lines.join('\n\n'),
-  );
+  const text =
+    `📋 <b>База групп (${groups.length})</b> — стр. ${page + 1}/${Math.ceil(groups.length / PAGE_SIZE)}\n\n` +
+    formatGroupsPage(groups, page);
+  const keyboard = pageKeyboard(page, groups.length, 'promo_list_page');
+  await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
 });
 
 // ─── Callbacks: промо-согласование ────────────────────────────────────────────

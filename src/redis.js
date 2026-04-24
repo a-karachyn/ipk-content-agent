@@ -102,6 +102,17 @@ async function clearMaxCaseDraft() {
   await redis.del('max_content:case_draft');
 }
 
+// ─── Promo search cache (результаты последнего /promo поиска) ─────────────────
+
+async function setPromoSearchCache(groups) {
+  await redis.set('promo:search_cache', JSON.stringify(groups), 'EX', 3600);
+}
+
+async function getPromoSearchCache() {
+  const val = await redis.get('promo:search_cache');
+  return val ? JSON.parse(val) : [];
+}
+
 // ─── Content format counter (чередование 1→2→3→1...) ─────────────────────────
 
 async function getFormatCounter() {
@@ -156,4 +167,7 @@ module.exports = {
   setMaxCaseField,
   getMaxCaseDraft,
   clearMaxCaseDraft,
+  // Promo search cache
+  setPromoSearchCache,
+  getPromoSearchCache,
 };
