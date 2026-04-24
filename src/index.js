@@ -14,7 +14,7 @@ function sleep(ms) {
 }
 
 async function launchBot() {
-  console.log(`[App] Запуск бота через ${LAUNCH_DELAY_MS / 1000}с (ожидание завершения старого инстанса)...`);
+  console.log(`[App] Запуск бота через ${LAUNCH_DELAY_MS / 1000}с...`);
   await sleep(LAUNCH_DELAY_MS);
 
   try {
@@ -24,25 +24,23 @@ async function launchBot() {
     console.warn('[App] deleteWebhook failed (non-fatal):', err.message);
   }
 
-  bot.launch({ allowedUpdates: ['message', 'callback_query'] });
+  // bot.launch() возвращает Promise, который resolves при bot.stop() и rejects
+  // при неустранимой ошибке (401, 409 и т.д.). Без .catch() — unhandled rejection
+  // → Node.js 15+ падает с exit code 1.
+  bot
+    .launch({ allowedUpdates: ['message', 'callback_query'] })
+    .catch((err) => {
+      const code = err?.response?.error_code;
+      if (code === 409) {
+        console.warn(`[Bot] 409 Conflict — другой инстанс polling. Перезапуск через ${RETRY_409_DELAY_MS / 1000}с...`);
+        sleep(RETRY_409_DELAY_MS).then(() => launchBot());
+      } else {
+        console.error('[Bot] Ошибка polling (планировщик продолжает работу):', err.message);
+      }
+    });
+
   console.log('[App] Бот запущен (polling)');
 }
-
-// Обрабатываем 409 Conflict — другой инстанс ещё держит polling.
-// Ждём 5 секунд и перезапускаем polling.
-bot.catch((err) => {
-  const code = err?.response?.error_code;
-  if (code === 409) {
-    console.warn(`[Bot] 409 Conflict — другой инстанс polling. Перезапуск через ${RETRY_409_DELAY_MS / 1000}с...`);
-    bot.stop();
-    sleep(RETRY_409_DELAY_MS).then(() => {
-      bot.launch({ allowedUpdates: ['message', 'callback_query'] });
-      console.log('[Bot] Polling перезапущен после 409');
-    });
-  } else {
-    console.error('[Bot] Необработанная ошибка:', err.message);
-  }
-});
 
 async function main() {
   await redis.ping();
