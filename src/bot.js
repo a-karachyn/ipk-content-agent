@@ -96,6 +96,18 @@ function dailyPromoApprovalKeyboard() {
   ]);
 }
 
+// ─── Keyboard после одобрения промо-поста ─────────────────────────────────────
+
+function promoReadyKeyboard(group) {
+  const raw = group?.link || '';
+  const url = raw.startsWith('http') ? raw : `https://${raw}`;
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('📋 Скопировать текст', 'copy_promo_text')],
+    [Markup.button.url('🔗 Открыть группу', url)],
+    [Markup.button.callback('✅ Опубликовано', 'promo_published')],
+  ]);
+}
+
 // ─── Отправка поста на согласование ──────────────────────────────────────────
 
 const POST_TYPE_LABELS = {
@@ -137,12 +149,9 @@ async function sendApprovedPromoText() {
   const { text, group } = approved;
   await bot.telegram.sendMessage(
     MANAGER_ID,
-    `📋 <b>Готово к публикации в канале</b>\n<b>${group.name}</b> | ${group.link}\n\nСкопируйте и опубликуйте:\n\n${text}`,
-    { parse_mode: 'HTML' },
+    `📋 <b>Готово к публикации</b>\n<b>${group.name}</b> | ${group.link}\n\n${text}`,
+    { parse_mode: 'HTML', ...promoReadyKeyboard(group) },
   );
-
-  await markGroupPublished(group.id, 'auto');
-  await clearApprovedPromoPending();
 }
 
 // ─── Публикация в канал ───────────────────────────────────────────────────────
@@ -352,10 +361,12 @@ bot.action('promo_approve', async (ctx) => {
   const pending = await getPromoPending();
   if (!pending) return ctx.reply('Нет промо-поста в очереди.');
 
-  await setManagerState('confirming_promo_publish');
+  await setApprovedPromoPending(pending);
+  await clearPromoPending();
   await ctx.editMessageReplyMarkup(undefined);
-  await ctx.reply(
-    `✅ Отлично! После публикации напишите: в какой группе опубликовали?\n(Название или ссылку)\n\n/cancel — отменить`,
+  await ctx.replyWithHTML(
+    `✅ <b>Промо-пост одобрен!</b>\n<b>${pending.group.name}</b> | ${pending.group.link}\n\n${pending.text}`,
+    promoReadyKeyboard(pending.group),
   );
 });
 
@@ -404,9 +415,9 @@ bot.action('promo_daily_approve', async (ctx) => {
   await setApprovedPromoPending(pending);
   await clearPromoPending();
   await ctx.editMessageReplyMarkup(undefined);
-  await ctx.reply(
-    `✅ Промо-пост одобрен! Будет отправлен на публикацию в 11:00 или 20:00 МСК.\nКанал: <b>${pending.group.name}</b>`,
-    { parse_mode: 'HTML' },
+  await ctx.replyWithHTML(
+    `✅ <b>Промо-пост одобрен!</b>\n<b>${pending.group.name}</b> | ${pending.group.link}\n\n${pending.text}`,
+    promoReadyKeyboard(pending.group),
   );
 });
 
@@ -443,6 +454,27 @@ bot.action('promo_daily_skip', async (ctx) => {
     console.error('[Bot] promo_daily_skip error:', err);
     await ctx.reply('Ошибка при генерации поста: ' + err.message);
   }
+});
+
+// ─── Callbacks: копирование и фиксация публикации ────────────────────────────
+
+bot.action('copy_promo_text', async (ctx) => {
+  await ctx.answerCbQuery();
+  const approved = await getApprovedPromoPending();
+  if (!approved) return ctx.reply('Пост не найден — возможно уже опубликован.');
+  await ctx.reply(approved.text);
+  await ctx.reply('Скопируйте текст выше, откройте группу и вставьте. Когда опубликуете — нажмите ✅ Опубликовано.');
+});
+
+bot.action('promo_published', async (ctx) => {
+  await ctx.answerCbQuery();
+  const approved = await getApprovedPromoPending();
+  if (!approved) return ctx.reply('Данные о посте не найдены.');
+
+  await markGroupPublished(approved.group.id, 'published');
+  await clearApprovedPromoPending();
+  await ctx.editMessageReplyMarkup(undefined);
+  await ctx.reply(`✅ Зафиксировано! Группа "${approved.group.name}" — следующая публикация через 14 дней.`);
 });
 
 bot.command('cancel', async (ctx) => {
@@ -535,18 +567,6 @@ bot.on('text', async (ctx) => {
       await ctx.reply(`Ошибка при генерации кейса: ${err.message}\n\nДанные сохранены, попробуйте /generate позже.`);
     }
     return;
-  }
-
-  if (state === 'confirming_promo_publish') {
-    const pending = await getPromoPending();
-    if (!pending) {
-      await setManagerState('idle');
-      return ctx.reply('Нет промо-поста в очереди.');
-    }
-    await markGroupPublished(pending.group.id, text);
-    await clearPromoPending();
-    await setManagerState('idle');
-    return ctx.reply(`✅ Зафиксировано! Группа "${pending.group.name}" — следующая публикация через 14 дней.`);
   }
 
   if (state === 'editing_promo') {
