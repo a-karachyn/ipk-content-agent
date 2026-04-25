@@ -14,7 +14,7 @@ async function main() {
   await redis.ping();
   console.log('[App] Redis OK');
 
-  startScheduler();
+  startScheduler(bot.telegram);
 
   // Webhook mode — без polling, без 409 Conflict
   await bot.telegram.setWebhook(WEBHOOK_URL, {

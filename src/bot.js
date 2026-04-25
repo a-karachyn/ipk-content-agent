@@ -10,25 +10,24 @@ const {
   setCaseField,
   getCaseDraft,
   clearCaseDraft,
-  setPromoSearchCache,
-  getPromoSearchCache,
 } = require('./redis');
 const { generateCasePost, generateNewsPost, generateFormatPost, FORMAT_LABELS } = require('./agent');
 const {
-  getGroups,
-  mergeGroups,
-  markGroupPublished,
+  getAllGroups,
+  getWeekQueue,
+  markGroupUsed,
+  removeFromWeekQueue,
+  buildWeekQueue,
+  validateWeekQueue,
+  generatePromoPost,
   getPromoPending,
   setPromoPending,
   clearPromoPending,
   getApprovedPromoPending,
   setApprovedPromoPending,
   clearApprovedPromoPending,
-  pickNextGroup,
-  searchGroups,
-  generatePromoPost,
+  addGroup,
   removeGroup,
-  validateGroups,
 } = require('./promo');
 
 const { registerMaxHandlers, handleMaxText } = require('./max-commands');
@@ -133,26 +132,12 @@ async function sendForApproval(postText, postType) {
 
 // ─── Отправка ежедневного промо менеджеру на согласование ────────────────────
 
-async function sendDailyPromoMessage(group, postText) {
+async function sendDailyPromoForApproval(group, postText) {
   await setPromoPending({ text: postText, group, source: 'daily' });
   await bot.telegram.sendMessage(
     MANAGER_ID,
-    `📣 <b>Ежедневный промо-пост для канала</b>\n<b>${group.name}</b>\n${group.link}\n\n${postText}`,
+    `📣 <b>Ежедневный промо-пост</b>\n<b>${group.name}</b>\n${group.link}\n\n${postText}`,
     { parse_mode: 'HTML', ...dailyPromoApprovalKeyboard() },
-  );
-}
-
-// ─── Отправка одобренного промо-текста для ручной публикации ─────────────────
-
-async function sendApprovedPromoText() {
-  const approved = await getApprovedPromoPending();
-  if (!approved) return;
-
-  const { text, group } = approved;
-  await bot.telegram.sendMessage(
-    MANAGER_ID,
-    `📋 <b>Готово к публикации</b>\n<b>${group.name}</b> | ${group.link}\n\n${text}`,
-    { parse_mode: 'HTML', ...promoReadyKeyboard(group) },
   );
 }
 
@@ -205,11 +190,13 @@ bot.command('help', async (ctx) => {
     `/case — запустить сбор данных для кейса\n` +
     `/status — состояние агента и очередь постов\n\n` +
     `<b>Продвижение:</b>\n` +
-    `/promo — найти профильные Telegram-группы через AI\n` +
-    `/promo_post — сгенерировать промо-пост для следующей группы\n` +
-    `/promo_list — список групп с датами публикаций\n` +
-    `/promo_validate — проверить группы на доступность\n` +
-    `/promo_remove <ссылка> — удалить группу из базы\n\n` +
+    `/promo — статус системы продвижения\n` +
+    `/promo_post — сгенерировать промо-пост вручную\n` +
+    `/promo_list — список всех групп в базе\n` +
+    `/promo_add &lt;ссылка&gt; [название] — добавить группу\n` +
+    `/promo_remove &lt;ссылка&gt; — удалить группу из базы\n` +
+    `/promo_validate — проверить очередь на доступность\n` +
+    `/promo_stats — статистика использования\n\n` +
     `/cancel — отменить текущую операцию\n` +
     `/help — этот список\n\n` +
     `Посты: каждые 2 дня в 10:00 МСК. Запрос кейса: пн 9:00 МСК.`,
@@ -264,40 +251,23 @@ bot.command('case', async (ctx) => {
 
 bot.command('promo', async (ctx) => {
   if (ctx.from.id !== MANAGER_ID) return;
-  await ctx.reply('Ищу профильные Telegram-группы через AI, подождите...');
   try {
-    const found = await searchGroups();
-    const { added, total } = await mergeGroups(found);
-    await setPromoSearchCache(found);
-
-    await ctx.reply('Проверяю доступность групп через Telegram API...');
-    const { removed, remaining } = await validateGroups(bot.telegram);
-
-    const page = 0;
-    const text =
-      `🔍 <b>Поиск завершён</b>\n` +
-      `Найдено: ${found.length}, добавлено: ${added}, удалено закрытых: ${removed}, в базе: ${remaining}\n\n` +
-      formatGroupsPage(found, page) +
-      `\n\nДля генерации промо-поста: /promo_post`;
-    const keyboard = pageKeyboard(page, found.length, 'promo_search_page');
-    await ctx.replyWithHTML(text, keyboard);
+    const [all, queue] = await Promise.all([getAllGroups(), getWeekQueue()]);
+    await ctx.replyWithHTML(
+      `📊 <b>Прomo-система</b>\n\n` +
+      `Всего групп в базе: ${all.length}\n` +
+      `В очереди на неделю: ${queue.length}\n\n` +
+      `/promo_list — список всех групп\n` +
+      `/promo_post — сгенерировать промо-пост вручную\n` +
+      `/promo_add &lt;ссылка&gt; — добавить группу\n` +
+      `/promo_remove &lt;ссылка&gt; — удалить группу\n` +
+      `/promo_validate — проверить очередь на доступность\n` +
+      `/promo_stats — статистика`,
+    );
   } catch (err) {
     console.error('[Bot] /promo error:', err);
-    await ctx.reply('Ошибка при поиске групп: ' + err.message);
+    await ctx.reply('Ошибка: ' + err.message);
   }
-});
-
-bot.action(/^promo_search_page:(\d+)$/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const page = parseInt(ctx.match[1], 10);
-  const found = await getPromoSearchCache();
-  if (!found.length) return ctx.reply('Результаты поиска устарели. Запустите /promo снова.');
-
-  const text =
-    `🔍 <b>Результаты поиска</b> (стр. ${page + 1}/${Math.ceil(found.length / PAGE_SIZE)})\n\n` +
-    formatGroupsPage(found, page);
-  const keyboard = pageKeyboard(page, found.length, 'promo_search_page');
-  await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
 });
 
 bot.command('promo_post', async (ctx) => {
@@ -308,16 +278,12 @@ bot.command('promo_post', async (ctx) => {
     return ctx.reply(`Сейчас активна другая операция (${state}). Сначала /cancel.`);
   }
 
-  const groups = await getGroups();
-  if (!groups.length) {
-    return ctx.reply('База групп пуста. Сначала запустите /promo для поиска групп.');
+  const queue = await getWeekQueue();
+  if (!queue.length) {
+    return ctx.reply('Очередь на неделю пуста. Запустите buildWeekQueue (понедельник 9:05) или подождите.');
   }
 
-  const group = pickNextGroup(groups);
-  if (!group) {
-    return ctx.reply('Нет активных групп. Проверьте статусы через /promo_list.');
-  }
-
+  const group = queue[0];
   await ctx.reply(`Генерирую промо-пост для группы <b>${group.name}</b>...`, { parse_mode: 'HTML' });
 
   try {
@@ -335,9 +301,9 @@ bot.command('promo_post', async (ctx) => {
 
 bot.command('promo_list', async (ctx) => {
   if (ctx.from.id !== MANAGER_ID) return;
-  const groups = await getGroups();
+  const groups = await getAllGroups();
   if (!groups.length) {
-    return ctx.reply('База групп пуста. Запустите /promo для поиска групп.');
+    return ctx.reply('База групп пуста. Группы автоматически загружаются из STATIC_GROUPS.');
   }
 
   const page = 0;
@@ -351,7 +317,7 @@ bot.command('promo_list', async (ctx) => {
 bot.action(/^promo_list_page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const page = parseInt(ctx.match[1], 10);
-  const groups = await getGroups();
+  const groups = await getAllGroups();
   if (!groups.length) return ctx.reply('База групп пуста.');
 
   const text =
@@ -361,18 +327,49 @@ bot.action(/^promo_list_page:(\d+)$/, async (ctx) => {
   await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
 });
 
+bot.command('promo_add', async (ctx) => {
+  if (ctx.from.id !== MANAGER_ID) return;
+  const args = ctx.message.text.replace('/promo_add', '').trim().split(/\s+/);
+  const link = args[0];
+  const name = args.slice(1).join(' ') || undefined;
+  if (!link) {
+    return ctx.reply('Укажите ссылку: /promo_add t.me/groupname [Название]');
+  }
+  const added = await addGroup(link, name);
+  await ctx.reply(added ? `✅ Группа добавлена: ${link}` : `Группа уже есть в базе: ${link}`);
+});
+
 bot.command('promo_validate', async (ctx) => {
   if (ctx.from.id !== MANAGER_ID) return;
-  const groups = await getGroups();
-  if (!groups.length) return ctx.reply('База групп пуста.');
+  const queue = await getWeekQueue();
+  if (!queue.length) return ctx.reply('Очередь на неделю пуста.');
 
-  await ctx.reply(`Проверяю ${groups.length} групп через Telegram API, подождите...`);
+  await ctx.reply(`Проверяю ${queue.length} групп через Telegram API, подождите...`);
   try {
-    const { total, removed, remaining } = await validateGroups(bot.telegram);
-    await ctx.reply(`✅ Проверено: ${total}, удалено закрытых: ${removed}, осталось: ${remaining}`);
+    const { removed, remaining } = await validateWeekQueue(bot.telegram);
+    await ctx.reply(`✅ Удалено недоступных: ${removed}, в очереди осталось: ${remaining}`);
   } catch (err) {
     console.error('[Bot] /promo_validate error:', err);
     await ctx.reply('Ошибка при валидации: ' + err.message);
+  }
+});
+
+bot.command('promo_stats', async (ctx) => {
+  if (ctx.from.id !== MANAGER_ID) return;
+  try {
+    const { getUsedGroups } = require('./promo');
+    const [all, queue, used] = await Promise.all([getAllGroups(), getWeekQueue(), getUsedGroups()]);
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const recentUsed = used.filter((u) => new Date(u.usedAt).getTime() > thirtyDaysAgo);
+    await ctx.replyWithHTML(
+      `📈 <b>Статистика продвижения</b>\n\n` +
+      `Всего групп: ${all.length}\n` +
+      `Очередь на неделю: ${queue.length}\n` +
+      `Использовано за 30 дней: ${recentUsed.length}\n` +
+      `Всего использовано: ${used.length}`,
+    );
+  } catch (err) {
+    await ctx.reply('Ошибка: ' + err.message);
   }
 });
 
@@ -415,13 +412,13 @@ bot.action('promo_edit', async (ctx) => {
 bot.action('promo_next', async (ctx) => {
   await ctx.answerCbQuery();
   const pending = await getPromoPending();
-  const excludeId = pending?.group?.id || null;
+  const excludeLink = pending?.group?.link || null;
 
-  const groups = await getGroups();
-  const nextGroup = pickNextGroup(groups, excludeId);
+  const queue = await getWeekQueue();
+  const nextGroup = queue.find((g) => g.link !== excludeLink) || null;
   if (!nextGroup) {
     await clearPromoPending();
-    return ctx.reply('Больше нет активных групп для выбора.');
+    return ctx.reply('Больше нет групп в очереди на эту неделю.');
   }
 
   await ctx.reply(`Генерирую пост для следующей группы: <b>${nextGroup.name}</b>...`, { parse_mode: 'HTML' });
@@ -466,15 +463,15 @@ bot.action('promo_daily_edit', async (ctx) => {
 bot.action('promo_daily_skip', async (ctx) => {
   await ctx.answerCbQuery();
   const pending = await getPromoPending();
-  const excludeId = pending?.group?.id || null;
+  const excludeLink = pending?.group?.link || null;
 
   await clearPromoPending();
   await ctx.editMessageReplyMarkup(undefined);
 
-  const groups = await getGroups();
-  const nextGroup = pickNextGroup(groups, excludeId);
+  const queue = await getWeekQueue();
+  const nextGroup = queue.find((g) => g.link !== excludeLink) || null;
   if (!nextGroup) {
-    return ctx.reply('Больше нет активных групп. База обновится в следующий понедельник.');
+    return ctx.reply('Больше нет групп в очереди на эту неделю. Новая очередь — в следующий понедельник.');
   }
 
   await ctx.reply(`Генерирую пост для следующей группы: <b>${nextGroup.name}</b>...`, { parse_mode: 'HTML' });
@@ -506,10 +503,11 @@ bot.action('promo_published', async (ctx) => {
   const approved = await getApprovedPromoPending();
   if (!approved) return ctx.reply('Данные о посте не найдены.');
 
-  await markGroupPublished(approved.group.id, 'published');
+  await markGroupUsed(approved.group);
+  await removeFromWeekQueue(approved.group.link);
   await clearApprovedPromoPending();
   await ctx.editMessageReplyMarkup(undefined);
-  await ctx.reply(`✅ Зафиксировано! Группа "${approved.group.name}" — следующая публикация через 14 дней.`);
+  await ctx.reply(`✅ Зафиксировано! Группа "${approved.group.name}" — следующая публикация через 30 дней.`);
 });
 
 bot.command('cancel', async (ctx) => {
@@ -623,4 +621,4 @@ bot.on('text', async (ctx) => {
   await ctx.reply('Используйте кнопки одобрения или дождитесь очередного поста от агента.');
 });
 
-module.exports = { bot, sendForApproval, startCaseCollection, sendDailyPromoMessage, sendApprovedPromoText };
+module.exports = { bot, sendForApproval, startCaseCollection, sendDailyPromoForApproval };

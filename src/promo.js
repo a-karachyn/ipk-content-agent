@@ -4,284 +4,242 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { redis } = require('./redis');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = process.env.MODEL || 'claude-sonnet-4-20250514';
+const MODEL = process.env.MODEL || 'claude-haiku-4-5-20251001';
 
-const GROUPS_KEY = 'promo:groups';
-const PENDING_KEY = 'promo:pending_post';
-const APPROVED_KEY = 'promo:approved_post';
+// ─── Redis ключи ──────────────────────────────────────────────────────────────
 
-// ─── Статический сид групп ────────────────────────────────────────────────────
+const KEYS = {
+  all:       'promo:groups:all',
+  week:      'promo:groups:week',
+  used:      'promo:groups:used',
+  pending:   'promo:pending_post',
+  approved:  'promo:approved_post',
+};
+
+// ─── Статический сид ──────────────────────────────────────────────────────────
 
 const STATIC_GROUPS = [
-  { name: 'ПТОшники & ПРОектировщики',          link: 'https://t.me/pro_pto',              category: 'Проектировщики' },
-  { name: 'Проектировщики РФ',                   link: 'https://t.me/proektirovshiki',      category: 'Проектировщики' },
-  { name: 'Проектирование и экспертиза',          link: 'https://t.me/proekt_expertiza',     category: 'Проектировщики' },
-  { name: 'Проектировщики инженерных систем',     link: 'https://t.me/inzh_proekt',          category: 'Проектировщики' },
-  { name: 'BIM проектирование Россия',            link: 'https://t.me/RevitoBIM',            category: 'BIM проектирование' },
-  { name: 'Архитекторы и проектировщики',         link: 'https://t.me/arch_proekt',          category: 'Проектировщики' },
-  { name: 'Проектная документация и экспертиза',  link: 'https://t.me/proekt_docs',          category: 'Проектировщики' },
-  { name: 'Инженерное проектирование',            link: 'https://t.me/engineering_design',   category: 'Проектировщики' },
-  { name: 'Технический заказчик',                 link: 'https://t.me/tech_zakazchik',       category: 'Технадзор' },
-  { name: 'Строительный бизнес РФ',              link: 'https://t.me/stroybiz_rf',          category: 'Строители' },
-  { name: 'Девелопмент и стройка',               link: 'https://t.me/development_stroy',    category: 'Девелоперы' },
-  { name: 'Коммерческая недвижимость СПб',        link: 'https://t.me/commercial_spb',       category: 'Девелоперы' },
-  { name: 'Промышленное строительство',           link: 'https://t.me/industrial_build',     category: 'Промышленность' },
-  { name: 'Госзакупки строительство',             link: 'https://t.me/goszakupki_build',     category: 'Тендеры' },
-  { name: 'Недвижимость СПб чат',                link: 'https://t.me/nedvizo_spb',          category: 'Недвижимость' },
-  { name: 'Строители РФ чат',                    link: 'https://t.me/stroiteli_rf_chat',    category: 'Строители' },
-  { name: 'Тендеры и закупки строительство',      link: 'https://t.me/zakupkiChat',          category: 'Тендеры' },
-  { name: 'Инвесторы в недвижимость СПб',         link: 'https://t.me/invest_spb_realty',    category: 'Инвесторы' },
-  { name: 'Управление строительными проектами',   link: 'https://t.me/pm_construction',      category: 'Технадзор' },
-  { name: 'Пожарная безопасность зданий',         link: 'https://t.me/fire_safety_ru',       category: 'Пожарная безопасность' },
+  { name: 'ПТОшники & ПРОектировщики',         link: 'https://t.me/pro_pto',            topic: 'Проектировщики' },
+  { name: 'Проектировщики РФ',                  link: 'https://t.me/proektirovshiki',    topic: 'Проектировщики' },
+  { name: 'Проектирование и экспертиза',         link: 'https://t.me/proekt_expertiza',   topic: 'Проектировщики' },
+  { name: 'Проектировщики инженерных систем',    link: 'https://t.me/inzh_proekt',        topic: 'Проектировщики' },
+  { name: 'BIM проектирование Россия',           link: 'https://t.me/RevitoBIM',          topic: 'BIM проектирование' },
+  { name: 'Архитекторы и проектировщики',        link: 'https://t.me/arch_proekt',        topic: 'Проектировщики' },
+  { name: 'Проектная документация и экспертиза', link: 'https://t.me/proekt_docs',        topic: 'Проектировщики' },
+  { name: 'Инженерное проектирование',           link: 'https://t.me/engineering_design', topic: 'Проектировщики' },
+  { name: 'Технический заказчик',                link: 'https://t.me/tech_zakazchik',     topic: 'Технадзор' },
+  { name: 'Строительный бизнес РФ',              link: 'https://t.me/stroybiz_rf',        topic: 'Строители' },
+  { name: 'Девелопмент и стройка',               link: 'https://t.me/development_stroy',  topic: 'Девелоперы' },
+  { name: 'Коммерческая недвижимость СПб',       link: 'https://t.me/commercial_spb',     topic: 'Девелоперы' },
+  { name: 'Промышленное строительство',          link: 'https://t.me/industrial_build',   topic: 'Промышленность' },
+  { name: 'Госзакупки строительство',            link: 'https://t.me/goszakupki_build',   topic: 'Тендеры' },
+  { name: 'Недвижимость СПб чат',               link: 'https://t.me/nedvizo_spb',        topic: 'Недвижимость' },
+  { name: 'Строители РФ чат',                   link: 'https://t.me/stroiteli_rf_chat',  topic: 'Строители' },
+  { name: 'Тендеры и закупки строительство',     link: 'https://t.me/zakupkiChat',        topic: 'Тендеры' },
+  { name: 'Инвесторы в недвижимость СПб',        link: 'https://t.me/invest_spb_realty',  topic: 'Инвесторы' },
+  { name: 'Управление строительными проектами',  link: 'https://t.me/pm_construction',    topic: 'Технадзор' },
+  { name: 'Пожарная безопасность зданий',        link: 'https://t.me/fire_safety_ru',     topic: 'Пожарная безопасность' },
 ];
 
-// ─── Redis: база групп ────────────────────────────────────────────────────────
+const TGSTAT_KEYWORDS = [
+  'проектирование',
+  'инженерное проектирование',
+  'пожарная безопасность',
+  'строительное проектирование',
+  'проектировщики',
+  'технадзор',
+  'застройщик СПб',
+  'девелопер строительство',
+  'BIM проектирование',
+  'экспертиза проектная документация',
+];
 
-async function getGroups() {
-  const data = await redis.get(GROUPS_KEY);
+// ─── Redis helpers ────────────────────────────────────────────────────────────
+
+async function getAllGroups() {
+  const data = await redis.get(KEYS.all);
   if (data) return JSON.parse(data);
-
-  // Первый запуск — заполняем базу из статического сида
-  const seeded = STATIC_GROUPS.map((g, i) => ({
-    id: `static_${i}`,
-    name: g.name,
-    link: g.link,
-    topic: g.category,
-    description: '',
-    status: 'active',
-    lastPublished: null,
-    publishNote: null,
-  }));
-  await saveGroups(seeded);
+  const seeded = STATIC_GROUPS.map((g, i) => ({ id: `static_${i}`, ...g }));
+  await saveAllGroups(seeded);
   console.log(`[Promo] База инициализирована из STATIC_GROUPS: ${seeded.length} групп`);
   return seeded;
 }
 
-async function saveGroups(groups) {
-  await redis.set(GROUPS_KEY, JSON.stringify(groups));
+async function saveAllGroups(groups) {
+  await redis.set(KEYS.all, JSON.stringify(groups));
 }
 
-// Добавляет новые группы, не дублируя по ссылке
-async function mergeGroups(newGroups) {
-  const existing = await getGroups();
-  const existingLinks = new Set(existing.map((g) => g.link));
-  const toAdd = newGroups.filter((g) => !existingLinks.has(g.link));
-  const merged = [...existing, ...toAdd];
-  await saveGroups(merged);
-  return { added: toAdd.length, total: merged.length };
+async function getWeekQueue() {
+  const data = await redis.get(KEYS.week);
+  return data ? JSON.parse(data) : [];
 }
 
-async function markGroupPublished(groupId, note) {
-  const groups = await getGroups();
-  const idx = groups.findIndex((g) => g.id === groupId);
-  if (idx !== -1) {
-    groups[idx].lastPublished = new Date().toISOString();
-    groups[idx].publishNote = note;
+async function saveWeekQueue(groups) {
+  await redis.set(KEYS.week, JSON.stringify(groups));
+}
+
+async function getUsedGroups() {
+  const data = await redis.get(KEYS.used);
+  return data ? JSON.parse(data) : [];
+}
+
+async function saveUsedGroups(groups) {
+  await redis.set(KEYS.used, JSON.stringify(groups));
+}
+
+async function markGroupUsed(group) {
+  const used = await getUsedGroups();
+  const filtered = used.filter((u) => u.link !== group.link);
+  filtered.push({ ...group, usedAt: new Date().toISOString() });
+  await saveUsedGroups(filtered);
+}
+
+async function removeFromWeekQueue(link) {
+  const queue = await getWeekQueue();
+  await saveWeekQueue(queue.filter((g) => g.link !== link));
+}
+
+// ─── ШАГ 1: поиск групп через tgstat.ru ──────────────────────────────────────
+
+async function scrapeGroupsByKeyword(keyword) {
+  const url = `https://tgstat.ru/search?q=${encodeURIComponent(keyword)}&type=group`;
+  let html;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; IPKContentBot/1.0)',
+        'Accept-Language': 'ru-RU,ru;q=0.9',
+      },
+    });
+    if (!res.ok) {
+      console.log(`[Promo] tgstat.ru ${res.status} для "${keyword}"`);
+      return [];
+    }
+    html = await res.text();
+  } catch (err) {
+    console.log(`[Promo] Ошибка tgstat.ru для "${keyword}": ${err.message}`);
+    return [];
   }
-  await saveGroups(groups);
+
+  const regex = /https?:\/\/t\.me\/([a-zA-Z0-9_]{5,32})/g;
+  const found = new Set();
+  let match;
+  while ((match = regex.exec(html)) !== null) {
+    const username = match[1].toLowerCase();
+    if (['joinchat', 'share', 'iv', 'proxy', 'addstickers'].includes(username)) continue;
+    found.add(`https://t.me/${match[1]}`);
+  }
+
+  console.log(`[Promo] tgstat "${keyword}": ${found.size} ссылок`);
+  return Array.from(found);
 }
-
-// ─── Redis: pending promo post ────────────────────────────────────────────────
-
-async function getPromoPending() {
-  const data = await redis.get(PENDING_KEY);
-  return data ? JSON.parse(data) : null;
-}
-
-async function setPromoPending(data) {
-  await redis.set(PENDING_KEY, JSON.stringify(data));
-}
-
-async function clearPromoPending() {
-  await redis.del(PENDING_KEY);
-}
-
-// ─── Redis: approved promo post (одобрен, ждёт публикации) ───────────────────
-
-async function getApprovedPromoPending() {
-  const { getApprovedPromo } = require('./redis');
-  return getApprovedPromo();
-}
-
-async function setApprovedPromoPending(data) {
-  const { setApprovedPromo } = require('./redis');
-  return setApprovedPromo(data);
-}
-
-async function clearApprovedPromoPending() {
-  const { clearApprovedPromo } = require('./redis');
-  return clearApprovedPromo();
-}
-
-// ─── Обновление базы групп (для понедельничного cron) ─────────────────────────
 
 async function updatePromoGroups() {
-  const found = await searchGroups();
-  const result = await mergeGroups(found);
-  console.log(`[Promo] Обновление базы групп: найдено ${found.length}, добавлено ${result.added}, всего ${result.total}`);
-  return result;
-}
+  console.log('[Promo] Обновление базы через tgstat.ru...');
+  const all = await getAllGroups();
+  const existingLinks = new Set(all.map((g) => g.link));
+  let added = 0;
 
-// ─── Выбор следующей группы ───────────────────────────────────────────────────
-
-function pickNextGroup(groups, excludeId = null) {
-  const active = groups.filter((g) => g.status === 'active' && g.id !== excludeId);
-  if (!active.length) return null;
-  return active.sort((a, b) => {
-    if (!a.lastPublished && !b.lastPublished) return 0;
-    if (!a.lastPublished) return -1;
-    if (!b.lastPublished) return 1;
-    return new Date(a.lastPublished) - new Date(b.lastPublished);
-  })[0];
-}
-
-// ─── Claude: поиск Telegram-групп ────────────────────────────────────────────
-
-const SEARCH_QUERIES = [
-  'застройщики девелоперы СПб Telegram чат',
-  'строительные компании генподряд Telegram группа',
-  'проектировщики архитекторы строительство Telegram чат',
-  'технадзор технический заказчик строительство Telegram группа',
-  'BIM информационное моделирование строительство Telegram чат',
-  'управляющие компании ЖКХ эксплуатация зданий Telegram группа',
-  'тендеры госзакупки строительство 44-ФЗ Telegram чат',
-  'пожарная безопасность СКУД инженерные системы зданий Telegram группа',
-  'умный дом автоматизация зданий строительство Telegram чат',
-  'недвижимость инвестиции коммерческая недвижимость СПб Telegram группа',
-];
-
-async function searchGroupsByQuery(query) {
-  console.log(`[Promo] Поиск по запросу: "${query}"`);
-
-  const prompt = `Найди 10 Telegram-групп и чатов по теме: "${query}".
-Ищи ТОЛЬКО открытые публичные Telegram группы и каналы где любой может написать сообщение без одобрения. Исключай закрытые группы, группы только для чтения, группы с модерацией вступления.
-Верни JSON-массив из 10 элементов:
-[{"name":"...","link":"t.me/...","topic":"...","description":"..."}]
-Только JSON, без пояснений.`;
-
-  const messages = [{ role: 'user', content: prompt }];
-
-  for (let i = 0; i < 6; i++) {
-    console.log(`[Promo] Итерация ${i + 1} для "${query}"`);
-
-    const response = await client.messages.create(
-      {
-        model: MODEL,
-        max_tokens: 2048,
-        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-        messages,
-      },
-      { headers: { 'anthropic-beta': 'web-search-2025-03-05' } },
-    );
-
-    console.log(`[Promo] stop_reason: ${response.stop_reason}, блоков: ${response.content.length}`);
-
-    if (response.stop_reason === 'end_turn') {
-      const raw = response.content
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
-        .trim();
-
-      console.log(`[Promo] Сырой ответ (первые 300 символов): ${raw.slice(0, 300)}`);
-
-      const clean = raw.replace(/```json/g, '').replace(/```/g, '').trim();
-      const start = clean.indexOf('[');
-      const end = clean.lastIndexOf(']');
-
-      console.log(`[Promo] Позиция '[': ${start}, ']': ${end}`);
-
-      if (start === -1 || end === -1) {
-        console.log(`[Promo] JSON-массив не найден в ответе для "${query}"`);
-        return [];
-      }
-
-      try {
-        const arr = JSON.parse(clean.slice(start, end + 1));
-        console.log(`[Promo] Распарсено групп: ${arr.length} для "${query}"`);
-        return arr;
-      } catch (err) {
-        console.log(`[Promo] Ошибка парсинга JSON для "${query}": ${err.message}`);
-        console.log(`[Promo] Фрагмент: ${clean.slice(start, start + 200)}`);
-        return [];
+  for (const keyword of TGSTAT_KEYWORDS) {
+    const links = await scrapeGroupsByKeyword(keyword);
+    for (const link of links) {
+      if (!existingLinks.has(link)) {
+        existingLinks.add(link);
+        all.push({
+          id: `tg_${Date.now()}_${added}`,
+          name: link.replace('https://t.me/', '@'),
+          link,
+          topic: keyword,
+        });
+        added++;
       }
     }
-
-    messages.push({ role: 'assistant', content: response.content });
-
-    const toolUses = response.content.filter((b) => b.type === 'tool_use');
-    console.log(`[Promo] tool_use вызовов: ${toolUses.length}`);
-    if (!toolUses.length) break;
-
-    messages.push({
-      role: 'user',
-      content: toolUses.map((tu) => ({
-        type: 'tool_result',
-        tool_use_id: tu.id,
-        content: [],
-      })),
-    });
+    await new Promise((r) => setTimeout(r, 1500));
   }
 
-  console.log(`[Promo] Лимит итераций исчерпан для "${query}"`);
-  return [];
+  await saveAllGroups(all);
+  console.log(`[Promo] Обновление завершено: +${added} новых, всего ${all.length}`);
+  return { added, total: all.length };
 }
 
-async function searchGroups() {
-  console.log(`[Promo] Запуск поиска по ${SEARCH_QUERIES.length} запросам`);
+// ─── ШАГ 2: формирование очереди на неделю ───────────────────────────────────
 
-  const results = await Promise.all(
-    SEARCH_QUERIES.map((query) =>
-      searchGroupsByQuery(query).catch((err) => {
-        console.log(`[Promo] Ошибка запроса "${query}": ${err.message}`);
-        return [];
-      }),
-    ),
+async function buildWeekQueue() {
+  const all = await getAllGroups();
+  const used = await getUsedGroups();
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const recentLinks = new Set(
+    used.filter((u) => new Date(u.usedAt).getTime() > thirtyDaysAgo).map((u) => u.link),
   );
 
-  const perQuery = results.map((r, i) => `"${SEARCH_QUERIES[i]}": ${r.length}`);
-  console.log(`[Promo] Результаты по запросам:\n  ${perQuery.join('\n  ')}`);
+  let available = all.filter((g) => !recentLinks.has(g.link));
 
-  const seenLinks = new Set();
-  const allGroups = [];
-
-  for (const found of results) {
-    for (const g of found) {
-      const link = (g.link || '').trim();
-      if (!link || seenLinks.has(link)) continue;
-      seenLinks.add(link);
-      allGroups.push({
-        id: `g_${Date.now()}_${allGroups.length}`,
-        name: g.name || 'Без названия',
-        link,
-        topic: g.topic || '',
-        description: g.description || '',
-        status: 'active',
-        lastPublished: null,
-        publishNote: null,
-      });
-    }
+  if (available.length < 7) {
+    console.log('[Promo] Все группы охвачены — сброс истории использования');
+    await saveUsedGroups([]);
+    available = all;
   }
 
-  console.log(`[Promo] Уникальных групп после дедупликации: ${allGroups.length}`);
-
-  if (!allGroups.length) throw new Error('Не найдено ни одной группы');
-  return allGroups;
+  const queue = available.slice(0, 14);
+  await saveWeekQueue(queue);
+  console.log(`[Promo] Очередь на неделю: ${queue.length} групп`);
+  return queue;
 }
 
-// ─── Claude: генерация промо-поста ───────────────────────────────────────────
+// ─── ШАГ 3: валидация очереди ─────────────────────────────────────────────────
+
+async function validateWeekQueue(telegram) {
+  const queue = await getWeekQueue();
+  const all = await getAllGroups();
+  const valid = [];
+  let removed = 0;
+
+  for (const group of queue) {
+    const username = extractUsername(group.link);
+    if (!username) { removed++; continue; }
+    try {
+      const chat = await telegram.getChat(username);
+      if (chat.type === 'private') {
+        console.log(`[Promo] Приватная, удалена: ${group.link}`);
+        removed++;
+      } else {
+        valid.push(group);
+      }
+    } catch (err) {
+      console.log(`[Promo] Недоступна, удалена (${err.message}): ${group.link}`);
+      removed++;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
+  if (removed > 0) {
+    const queueLinks = new Set(valid.map((g) => g.link));
+    const used = await getUsedGroups();
+    const usedLinks = new Set(used.map((u) => u.link));
+    const extras = all
+      .filter((g) => !queueLinks.has(g.link) && !usedLinks.has(g.link))
+      .slice(0, removed);
+    valid.push(...extras);
+    console.log(`[Promo] Добавлено ${extras.length} замен`);
+  }
+
+  await saveWeekQueue(valid);
+  console.log(`[Promo] Валидация: удалено ${removed}, в очереди ${valid.length}`);
+  return { removed, remaining: valid.length };
+}
+
+// ─── ШАГ 4: генерация промо-поста ────────────────────────────────────────────
 
 async function generatePromoPost(group) {
-  await new Promise((resolve) => setTimeout(resolve, 5000));
+  await new Promise((r) => setTimeout(r, 3000));
 
   const name = group.name.slice(0, 40);
-  const prompt = `Напиши пост 150–200 слов для Telegram-группы "${name}".
+  const prompt = `Напиши пост 150 слов для Telegram-группы "${name}".
 Аудитория: застройщики и заказчики строительства.
 Раскрой одну боль: замечания ГПН или штрафы МЧС из-за ошибок в проектировании пожарной безопасности.
-Без рекламного тона. Завершённый текст с логичным концом.
-В самом конце добавь:
-"Пишите нам: @IPK_zayvki_bot или подписывайтесь на канал: t.me/ipk_proekt"
-#пожарнаябезопасность #проектирование #СПб #ИПК`;
+В конце добавь: "Пишите нам: @IPK_zayvki_bot или подписывайтесь на канал: t.me/ipk_proekt"
+#пожарнаябезопасность #проектирование #СПб #ИПК
+Без рекламного тона. Завершённый текст.`;
 
   const response = await client.messages.create({
     model: MODEL,
@@ -289,84 +247,87 @@ async function generatePromoPost(group) {
     messages: [{ role: 'user', content: prompt }],
   });
 
-  return response.content
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim();
+  return response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
 }
 
-// Удаляет группу по ссылке (частичное совпадение).
-async function removeGroup(linkQuery) {
-  const groups = await getGroups();
-  const needle = linkQuery.trim().toLowerCase().replace(/^https?:\/\//, '');
-  const filtered = groups.filter((g) => !g.link.toLowerCase().replace(/^https?:\/\//, '').includes(needle));
-  await saveGroups(filtered);
-  return groups.length - filtered.length;
+// ─── Pending / Approved (используется из bot.js) ──────────────────────────────
+
+async function getPromoPending() {
+  const data = await redis.get(KEYS.pending);
+  return data ? JSON.parse(data) : null;
 }
 
-// Извлекает username из ссылки вида t.me/name или https://t.me/name
+async function setPromoPending(data) {
+  await redis.set(KEYS.pending, JSON.stringify(data));
+}
+
+async function clearPromoPending() {
+  await redis.del(KEYS.pending);
+}
+
+async function getApprovedPromoPending() {
+  const data = await redis.get(KEYS.approved);
+  return data ? JSON.parse(data) : null;
+}
+
+async function setApprovedPromoPending(data) {
+  await redis.set(KEYS.approved, JSON.stringify(data));
+}
+
+async function clearApprovedPromoPending() {
+  await redis.del(KEYS.approved);
+}
+
+// ─── Утилиты ──────────────────────────────────────────────────────────────────
+
 function extractUsername(link) {
-  const clean = link.replace(/^https?:\/\//, '').replace(/^t\.me\//, '');
+  const clean = (link || '').replace(/^https?:\/\//, '').replace(/^t\.me\//, '');
   const username = clean.split('/')[0].split('?')[0].trim();
   return username ? `@${username}` : null;
 }
 
-/**
- * Проверяет каждую группу через Telegram API.
- * Принимает bot.telegram чтобы избежать циклического импорта.
- * Удаляет недоступные и приватные группы, возвращает статистику.
- */
-async function validateGroups(telegram) {
-  const groups = await getGroups();
-  const valid = [];
-  let removed = 0;
+async function addGroup(link, name) {
+  const normalizedLink = link.startsWith('http') ? link : `https://t.me/${link.replace(/^@/, '')}`;
+  const all = await getAllGroups();
+  if (all.some((g) => g.link === normalizedLink)) return false;
+  all.push({
+    id: `manual_${Date.now()}`,
+    name: name || normalizedLink.replace('https://t.me/', '@'),
+    link: normalizedLink,
+    topic: 'ручное добавление',
+  });
+  await saveAllGroups(all);
+  return true;
+}
 
-  for (const group of groups) {
-    const username = extractUsername(group.link || '');
-    if (!username) {
-      console.log(`[Promo] Пропуск (нет username): ${group.link}`);
-      removed++;
-      continue;
-    }
-
-    try {
-      const chat = await telegram.getChat(username);
-      if (chat.type === 'private') {
-        console.log(`[Promo] Удалена приватная: ${group.link}`);
-        removed++;
-      } else {
-        valid.push(group);
-      }
-    } catch (err) {
-      console.log(`[Promo] Удалена недоступная (${err.message}): ${group.link}`);
-      removed++;
-    }
-
-    // Пауза между запросами чтобы не превысить rate limit Telegram API
-    await new Promise((r) => setTimeout(r, 300));
-  }
-
-  await saveGroups(valid);
-  console.log(`[Promo] Валидация завершена: проверено ${groups.length}, удалено ${removed}, осталось ${valid.length}`);
-  return { total: groups.length, removed, remaining: valid.length };
+async function removeGroup(linkQuery) {
+  const needle = linkQuery.trim().toLowerCase().replace(/^https?:\/\//, '');
+  const all = await getAllGroups();
+  const filtered = all.filter((g) => !g.link.toLowerCase().replace(/^https?:\/\//, '').includes(needle));
+  await saveAllGroups(filtered);
+  const week = await getWeekQueue();
+  await saveWeekQueue(week.filter((g) => !g.link.toLowerCase().replace(/^https?:\/\//, '').includes(needle)));
+  return all.length - filtered.length;
 }
 
 module.exports = {
-  getGroups,
-  saveGroups,
-  mergeGroups,
-  markGroupPublished,
-  removeGroup,
-  validateGroups,
+  getAllGroups,
+  getWeekQueue,
+  saveWeekQueue,
+  getUsedGroups,
+  markGroupUsed,
+  removeFromWeekQueue,
+  updatePromoGroups,
+  buildWeekQueue,
+  validateWeekQueue,
+  generatePromoPost,
   getPromoPending,
   setPromoPending,
   clearPromoPending,
   getApprovedPromoPending,
   setApprovedPromoPending,
   clearApprovedPromoPending,
-  updatePromoGroups,
-  pickNextGroup,
-  searchGroups,
-  generatePromoPost,
+  extractUsername,
+  addGroup,
+  removeGroup,
 };

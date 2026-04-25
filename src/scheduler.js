@@ -3,8 +3,8 @@
 const cron = require('node-cron');
 const { getFormatCounter, incrementFormatCounter, getPendingPost, getCaseDraft, clearCaseDraft } = require('./redis');
 const { generateCasePost, generateFormatPost } = require('./agent');
-const { sendForApproval, startCaseCollection, sendDailyPromoMessage, sendApprovedPromoText } = require('./bot');
-const { updatePromoGroups, getGroups, pickNextGroup, generatePromoPost } = require('./promo');
+const { sendForApproval, startCaseCollection, sendDailyPromoForApproval } = require('./bot');
+const { updatePromoGroups, buildWeekQueue, validateWeekQueue, getWeekQueue, generatePromoPost } = require('./promo');
 
 /**
  * Каждые 2 дня в 10:00 по Москве генерируем пост.
@@ -69,14 +69,13 @@ function scheduleCaseRequest() {
 }
 
 /**
- * Каждый понедельник в 9:00 МСК — автоматическое обновление списка профильных каналов.
- * Параллельный поиск по 10 категориям через Promise.all, результат в Redis promo:groups.
+ * Каждый понедельник в 9:00 МСК — обновление базы групп через tgstat.ru.
  */
 function schedulePromoGroupsUpdate() {
   cron.schedule(
     '0 9 * * 1',
     async () => {
-      console.log('[Scheduler] Обновление базы промо-групп...');
+      console.log('[Scheduler] Обновление базы промо-групп через tgstat.ru...');
       try {
         await updatePromoGroups();
       } catch (err) {
@@ -90,7 +89,47 @@ function schedulePromoGroupsUpdate() {
 }
 
 /**
- * Каждый день в 9:20 МСК — берём следующую группу из списка,
+ * Каждый понедельник в 9:05 МСК — формирование очереди на неделю (14 групп, 30-дневный кулдаун).
+ */
+function scheduleBuildWeekQueue() {
+  cron.schedule(
+    '5 9 * * 1',
+    async () => {
+      console.log('[Scheduler] Формирование очереди на неделю...');
+      try {
+        await buildWeekQueue();
+      } catch (err) {
+        console.error('[Scheduler] Ошибка buildWeekQueue:', err);
+      }
+    },
+    { timezone: 'Europe/Moscow' },
+  );
+
+  console.log('[Scheduler] Очередь на неделю: каждый понедельник в 9:05 МСК');
+}
+
+/**
+ * Каждый понедельник в 9:10 МСК — валидация очереди через Telegram API.
+ */
+function scheduleValidateWeekQueue(telegram) {
+  cron.schedule(
+    '10 9 * * 1',
+    async () => {
+      console.log('[Scheduler] Валидация очереди на неделю...');
+      try {
+        await validateWeekQueue(telegram);
+      } catch (err) {
+        console.error('[Scheduler] Ошибка validateWeekQueue:', err);
+      }
+    },
+    { timezone: 'Europe/Moscow' },
+  );
+
+  console.log('[Scheduler] Валидация очереди: каждый понедельник в 9:10 МСК');
+}
+
+/**
+ * Каждый день в 9:20 МСК — берём следующую группу из очереди,
  * генерируем промо-пост и отправляем менеджеру на согласование.
  */
 function scheduleDailyPromoApproval() {
@@ -99,20 +138,15 @@ function scheduleDailyPromoApproval() {
     async () => {
       console.log('[Scheduler] Генерация ежедневного промо-поста...');
       try {
-        const groups = await getGroups();
-        if (!groups.length) {
-          console.log('[Scheduler] База промо-групп пуста, пропускаем.');
+        const queue = await getWeekQueue();
+        if (!queue.length) {
+          console.log('[Scheduler] Очередь промо-групп пуста, пропускаем.');
           return;
         }
 
-        const group = pickNextGroup(groups);
-        if (!group) {
-          console.log('[Scheduler] Нет активных групп для промо.');
-          return;
-        }
-
+        const group = queue[0];
         const postText = await generatePromoPost(group);
-        await sendDailyPromoMessage(group, postText);
+        await sendDailyPromoForApproval(group, postText);
         console.log(`[Scheduler] Промо-пост для "${group.name}" отправлен менеджеру.`);
       } catch (err) {
         console.error('[Scheduler] Ошибка генерации промо-поста:', err);
@@ -124,45 +158,13 @@ function scheduleDailyPromoApproval() {
   console.log('[Scheduler] Ежедневный промо-пост на согласование: 9:20 МСК');
 }
 
-/**
- * В 11:00 и 20:00 МСК — отправляем менеджеру одобренный промо-текст для копирования и ручной публикации.
- */
-function scheduleApprovedPromoPublish() {
-  cron.schedule(
-    '0 11 * * *',
-    async () => {
-      console.log('[Scheduler] Публикация одобренного промо (11:00)...');
-      try {
-        await sendApprovedPromoText();
-      } catch (err) {
-        console.error('[Scheduler] Ошибка публикации промо 11:00:', err);
-      }
-    },
-    { timezone: 'Europe/Moscow' },
-  );
-
-  cron.schedule(
-    '0 20 * * *',
-    async () => {
-      console.log('[Scheduler] Публикация одобренного промо (20:00)...');
-      try {
-        await sendApprovedPromoText();
-      } catch (err) {
-        console.error('[Scheduler] Ошибка публикации промо 20:00:', err);
-      }
-    },
-    { timezone: 'Europe/Moscow' },
-  );
-
-  console.log('[Scheduler] Публикация одобренного промо: 11:00 и 20:00 МСК');
-}
-
-function startScheduler() {
+function startScheduler(telegram) {
   schedulePostGeneration();
   scheduleCaseRequest();
   schedulePromoGroupsUpdate();
+  scheduleBuildWeekQueue();
+  scheduleValidateWeekQueue(telegram);
   scheduleDailyPromoApproval();
-  scheduleApprovedPromoPublish();
 }
 
 module.exports = { startScheduler };
