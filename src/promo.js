@@ -204,11 +204,14 @@ async function generatePromoPost(group) {
   const prompt = `Напиши пост 150–200 слов для Telegram-группы "${name}".
 Аудитория: застройщики и заказчики строительства.
 Раскрой одну боль: замечания ГПН или штрафы МЧС из-за ошибок в проектировании пожарной безопасности.
-В конце упомяни @ipk_proekt и @IPK_zayvki_bot. Без хэштегов. Без рекламного тона.`;
+Без рекламного тона. Завершённый текст с логичным концом.
+В самом конце добавь:
+"Пишите нам: @IPK_zayvki_bot или подписывайтесь на канал: t.me/ipk_proekt"
+#пожарнаябезопасность #проектирование #СПб #ИПК`;
 
   const response = await client.messages.create({
     model: MODEL,
-    max_tokens: 300,
+    max_tokens: 500,
     messages: [{ role: 'user', content: prompt }],
   });
 
