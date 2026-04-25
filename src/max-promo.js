@@ -151,17 +151,16 @@ async function addGroup(name, link, topic = '', description = '') {
 // ─── Claude: генерация промо-поста для MAX ───────────────────────────────────
 
 async function generatePromoPost(group) {
-  const prompt = `Напиши экспертный пост (600–900 символов) для сообщества MAX "${group.name}" (тема: ${group.topic}).
-Аудитория: застройщики и заказчики строительства.
-Тема: почему экономия на проектировании пожарной безопасности срывает сдачу объекта.
-Раскрой одну боль: замечания ГПН/экспертизы, штрафы МЧС или риски при пожаре.
-В конце (2–3 строки) упомяни сообщество ИПК в MAX (max.ru/id351000349259_biz).
-Только чистый текст с эмодзи. Без HTML-тегов. Без хэштегов. Без рекламного тона. Не начинай с названия компании.`;
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+
+  const name = group.name.slice(0, 40);
+  const prompt = `Напиши пост 150 слов для MAX-сообщества "${name}".
+Боль: замечания ГПН или штрафы МЧС из-за ошибок проектирования пожарной безопасности.
+В конце упомяни max.ru/id351000349259_biz. Без хэштегов. Без рекламного тона.`;
 
   const response = await client.messages.create({
     model: MODEL,
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    max_tokens: 400,
     messages: [{ role: 'user', content: prompt }],
   });
 
