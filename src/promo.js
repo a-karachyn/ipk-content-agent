@@ -111,8 +111,8 @@ const SEARCH_QUERIES = [
 ];
 
 async function searchGroupsByQuery(query) {
-  const prompt = `Найди 10 Telegram-групп и чатов (не каналов) по теме: "${query}".
-Только группы где можно писать сообщения участникам.
+  const prompt = `Найди 10 Telegram-групп и чатов по теме: "${query}".
+Ищи ТОЛЬКО открытые публичные Telegram группы и каналы где любой может написать сообщение без одобрения. Исключай закрытые группы, группы только для чтения, группы с модерацией вступления.
 Верни JSON-массив из 10 элементов:
 [{"name":"...","link":"t.me/...","topic":"...","description":"..."}]
 Только JSON, без пояснений.`;
@@ -222,11 +222,21 @@ async function generatePromoPost(group) {
     .trim();
 }
 
+// Удаляет группу по ссылке (частичное совпадение).
+async function removeGroup(linkQuery) {
+  const groups = await getGroups();
+  const needle = linkQuery.trim().toLowerCase().replace(/^https?:\/\//, '');
+  const filtered = groups.filter((g) => !g.link.toLowerCase().replace(/^https?:\/\//, '').includes(needle));
+  await saveGroups(filtered);
+  return groups.length - filtered.length;
+}
+
 module.exports = {
   getGroups,
   saveGroups,
   mergeGroups,
   markGroupPublished,
+  removeGroup,
   getPromoPending,
   setPromoPending,
   clearPromoPending,

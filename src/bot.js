@@ -27,6 +27,7 @@ const {
   pickNextGroup,
   searchGroups,
   generatePromoPost,
+  removeGroup,
 } = require('./promo');
 
 const { registerMaxHandlers, handleMaxText } = require('./max-commands');
@@ -205,7 +206,8 @@ bot.command('help', async (ctx) => {
     `<b>Продвижение:</b>\n` +
     `/promo — найти профильные Telegram-группы через AI\n` +
     `/promo_post — сгенерировать промо-пост для следующей группы\n` +
-    `/promo_list — список групп с датами публикаций\n\n` +
+    `/promo_list — список групп с датами публикаций\n` +
+    `/promo_remove <ссылка> — удалить группу из базы\n\n` +
     `/cancel — отменить текущую операцию\n` +
     `/help — этот список\n\n` +
     `Посты: каждые 2 дня в 10:00 МСК. Запрос кейса: пн 9:00 МСК.`,
@@ -352,6 +354,19 @@ bot.action(/^promo_list_page:(\d+)$/, async (ctx) => {
     formatGroupsPage(groups, page);
   const keyboard = pageKeyboard(page, groups.length, 'promo_list_page');
   await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+});
+
+bot.command('promo_remove', async (ctx) => {
+  if (ctx.from.id !== MANAGER_ID) return;
+  const arg = ctx.message.text.replace('/promo_remove', '').trim();
+  if (!arg) {
+    return ctx.reply('Укажите ссылку: /promo_remove t.me/groupname');
+  }
+  const deleted = await removeGroup(arg);
+  if (deleted === 0) {
+    return ctx.reply(`Группа не найдена в базе: ${arg}`);
+  }
+  await ctx.reply(`✅ Удалено групп: ${deleted} (совпадение по "${arg}")`);
 });
 
 // ─── Callbacks: промо-согласование ────────────────────────────────────────────
