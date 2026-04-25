@@ -111,6 +111,8 @@ const SEARCH_QUERIES = [
 ];
 
 async function searchGroupsByQuery(query) {
+  console.log(`[Promo] Поиск по запросу: "${query}"`);
+
   const prompt = `Найди 10 Telegram-групп и чатов по теме: "${query}".
 Ищи ТОЛЬКО открытые публичные Telegram группы и каналы где любой может написать сообщение без одобрения. Исключай закрытые группы, группы только для чтения, группы с модерацией вступления.
 Верни JSON-массив из 10 элементов:
@@ -120,6 +122,8 @@ async function searchGroupsByQuery(query) {
   const messages = [{ role: 'user', content: prompt }];
 
   for (let i = 0; i < 6; i++) {
+    console.log(`[Promo] Итерация ${i + 1} для "${query}"`);
+
     const response = await client.messages.create(
       {
         model: MODEL,
@@ -130,19 +134,35 @@ async function searchGroupsByQuery(query) {
       { headers: { 'anthropic-beta': 'web-search-2025-03-05' } },
     );
 
+    console.log(`[Promo] stop_reason: ${response.stop_reason}, блоков: ${response.content.length}`);
+
     if (response.stop_reason === 'end_turn') {
-      const text = response.content
+      const raw = response.content
         .filter((b) => b.type === 'text')
         .map((b) => b.text)
         .join('\n')
         .trim();
 
-      const match = text.match(/\[[\s\S]*\]/);
-      if (!match) return [];
+      console.log(`[Promo] Сырой ответ (первые 300 символов): ${raw.slice(0, 300)}`);
+
+      const clean = raw.replace(/```json/g, '').replace(/```/g, '').trim();
+      const start = clean.indexOf('[');
+      const end = clean.lastIndexOf(']');
+
+      console.log(`[Promo] Позиция '[': ${start}, ']': ${end}`);
+
+      if (start === -1 || end === -1) {
+        console.log(`[Promo] JSON-массив не найден в ответе для "${query}"`);
+        return [];
+      }
 
       try {
-        return JSON.parse(match[0]);
-      } catch {
+        const arr = JSON.parse(clean.slice(start, end + 1));
+        console.log(`[Promo] Распарсено групп: ${arr.length} для "${query}"`);
+        return arr;
+      } catch (err) {
+        console.log(`[Promo] Ошибка парсинга JSON для "${query}": ${err.message}`);
+        console.log(`[Promo] Фрагмент: ${clean.slice(start, start + 200)}`);
         return [];
       }
     }
@@ -150,6 +170,7 @@ async function searchGroupsByQuery(query) {
     messages.push({ role: 'assistant', content: response.content });
 
     const toolUses = response.content.filter((b) => b.type === 'tool_use');
+    console.log(`[Promo] tool_use вызовов: ${toolUses.length}`);
     if (!toolUses.length) break;
 
     messages.push({
@@ -162,13 +183,24 @@ async function searchGroupsByQuery(query) {
     });
   }
 
+  console.log(`[Promo] Лимит итераций исчерпан для "${query}"`);
   return [];
 }
 
 async function searchGroups() {
+  console.log(`[Promo] Запуск поиска по ${SEARCH_QUERIES.length} запросам`);
+
   const results = await Promise.all(
-    SEARCH_QUERIES.map((query) => searchGroupsByQuery(query).catch(() => [])),
+    SEARCH_QUERIES.map((query) =>
+      searchGroupsByQuery(query).catch((err) => {
+        console.log(`[Promo] Ошибка запроса "${query}": ${err.message}`);
+        return [];
+      }),
+    ),
   );
+
+  const perQuery = results.map((r, i) => `"${SEARCH_QUERIES[i]}": ${r.length}`);
+  console.log(`[Promo] Результаты по запросам:\n  ${perQuery.join('\n  ')}`);
 
   const seenLinks = new Set();
   const allGroups = [];
@@ -190,6 +222,8 @@ async function searchGroups() {
       });
     }
   }
+
+  console.log(`[Promo] Уникальных групп после дедупликации: ${allGroups.length}`);
 
   if (!allGroups.length) throw new Error('Не найдено ни одной группы');
   return allGroups;
