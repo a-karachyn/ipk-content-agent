@@ -1,93 +1,89 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { SYSTEM_PROMPT } = require('./prompts');
 const { redis } = require('./redis');
 const { maxRequest } = require('./max');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = process.env.MODEL || 'claude-sonnet-4-6';
+const MODEL = process.env.MODEL || 'claude-haiku-4-5-20251001';
 
-const GROUPS_KEY = 'max_promo:groups';
-const PENDING_KEY = 'max_promo:pending_post';
+const KEYS = {
+  all:     'max_promo:groups:all',
+  week:    'max_promo:groups:week',
+  used:    'max_promo:groups:used',
+  pending: 'max_promo:pending_post',
+};
 
-// ─── Redis: база MAX сообществ ────────────────────────────────────────────────
+const SEARCH_KEYWORDS = [
+  'проектирование',
+  'строительство',
+  'застройщик',
+  'девелопер',
+  'недвижимость',
+  'архитектура',
+  'BIM',
+  'технадзор',
+  'пожарная безопасность',
+  'инженерные системы',
+];
 
-async function getGroups() {
-  const data = await redis.get(GROUPS_KEY);
+// ─── Redis helpers ────────────────────────────────────────────────────────────
+
+async function getAllGroups() {
+  const data = await redis.get(KEYS.all);
   return data ? JSON.parse(data) : [];
 }
 
-async function saveGroups(groups) {
-  await redis.set(GROUPS_KEY, JSON.stringify(groups));
+async function saveAllGroups(groups) {
+  await redis.set(KEYS.all, JSON.stringify(groups));
 }
 
-async function mergeGroups(newGroups) {
-  const existing = await getGroups();
-  const existingLinks = new Set(existing.map((g) => g.link));
-  const toAdd = newGroups.filter((g) => !existingLinks.has(g.link));
-  const merged = [...existing, ...toAdd];
-  await saveGroups(merged);
-  return { added: toAdd.length, total: merged.length };
+async function getWeekQueue() {
+  const data = await redis.get(KEYS.week);
+  return data ? JSON.parse(data) : [];
 }
 
-async function markGroupPublished(groupId, note) {
-  const groups = await getGroups();
-  const idx = groups.findIndex((g) => g.id === groupId);
-  if (idx !== -1) {
-    groups[idx].lastPublished = new Date().toISOString();
-    groups[idx].publishNote = note;
-  }
-  await saveGroups(groups);
+async function saveWeekQueue(groups) {
+  await redis.set(KEYS.week, JSON.stringify(groups));
 }
 
-// ─── Redis: pending promo post ────────────────────────────────────────────────
+async function getUsedGroups() {
+  const data = await redis.get(KEYS.used);
+  return data ? JSON.parse(data) : [];
+}
 
-async function getPromoPending() {
-  const data = await redis.get(PENDING_KEY);
+async function saveUsedGroups(groups) {
+  await redis.set(KEYS.used, JSON.stringify(groups));
+}
+
+async function markGroupUsed(group) {
+  const used = await getUsedGroups();
+  const filtered = used.filter((u) => u.chatId !== group.chatId);
+  filtered.push({ ...group, usedAt: new Date().toISOString() });
+  await saveUsedGroups(filtered);
+}
+
+async function removeFromWeekQueue(chatId) {
+  const queue = await getWeekQueue();
+  await saveWeekQueue(queue.filter((g) => g.chatId !== chatId));
+}
+
+// ─── Pending post ────────────────────────────────────────────────────────────
+
+async function getMaxPromoPending() {
+  const data = await redis.get(KEYS.pending);
   return data ? JSON.parse(data) : null;
 }
 
-async function setPromoPending(data) {
-  await redis.set(PENDING_KEY, JSON.stringify(data));
+async function setMaxPromoPending(data) {
+  await redis.set(KEYS.pending, JSON.stringify(data));
 }
 
-async function clearPromoPending() {
-  await redis.del(PENDING_KEY);
+async function clearMaxPromoPending() {
+  await redis.del(KEYS.pending);
 }
 
-// ─── Выбор следующей группы ───────────────────────────────────────────────────
-
-function pickNextGroup(groups, excludeId = null) {
-  const active = groups.filter((g) => g.status === 'active' && g.id !== excludeId);
-  if (!active.length) return null;
-  return active.sort((a, b) => {
-    if (!a.lastPublished && !b.lastPublished) return 0;
-    if (!a.lastPublished) return -1;
-    if (!b.lastPublished) return 1;
-    return new Date(a.lastPublished) - new Date(b.lastPublished);
-  })[0];
-}
-
-// ─── MAX API: поиск сообществ ─────────────────────────────────────────────────
-
-const SEARCH_KEYWORDS = [
-  'застройщики',
-  'строители',
-  'проектировщики',
-  'девелоперы',
-  'архитекторы',
-  'недвижимость СПб',
-  'строительство СПб',
-  'BIM',
-  'технадзор',
-  'генподряд',
-  'капремонт',
-  'ЖКХ',
-  'управляющая компания',
-  'тендеры строительство',
-  'инженерные системы',
-];
+// ─── ШАГ 1: поиск сообществ через MAX API ────────────────────────────────────
 
 async function searchByKeyword(keyword) {
   try {
@@ -99,88 +95,118 @@ async function searchByKeyword(keyword) {
   }
 }
 
-async function searchGroups() {
-  const results = await Promise.all(SEARCH_KEYWORDS.map((kw) => searchByKeyword(kw)));
+async function updateMaxPromoGroups() {
+  console.log('[MaxPromo] Обновление базы через MAX API...');
+  const all = await getAllGroups();
+  const existingIds = new Set(all.map((g) => g.chatId));
+  let added = 0;
 
-  const seenIds = new Set();
-  const allGroups = [];
+  const results = await Promise.all(SEARCH_KEYWORDS.map((kw) => searchByKeyword(kw)));
 
   for (const chats of results) {
     for (const chat of chats) {
       const chatId = String(chat.chat_id ?? chat.id ?? '');
-      if (!chatId || seenIds.has(chatId)) continue;
-      seenIds.add(chatId);
-      allGroups.push({
+      if (!chatId || existingIds.has(chatId)) continue;
+      existingIds.add(chatId);
+      all.push({
         id: `mg_${chatId}`,
         name: chat.title || chat.name || 'Без названия',
         link: chat.invite_link || chat.link || `max.ru/chat/${chatId}`,
         topic: chat.description || '',
-        description: chat.description || '',
         chatId,
-        status: 'active',
-        lastPublished: null,
-        publishNote: null,
       });
+      added++;
     }
   }
 
-  if (!allGroups.length) throw new Error('MAX API не вернул ни одного сообщества');
-  return allGroups;
+  await saveAllGroups(all);
+  console.log(`[MaxPromo] Обновление завершено: +${added} новых, всего ${all.length}`);
+  return { added, total: all.length };
 }
 
-async function addGroup(name, link, topic = '', description = '') {
-  const existing = await getGroups();
-  const existingLinks = new Set(existing.map((g) => g.link));
-  if (existingLinks.has(link)) return { added: false, total: existing.length };
+// ─── ШАГ 2: формирование очереди на неделю ───────────────────────────────────
 
-  const group = {
-    id: `mg_${Date.now()}`,
-    name,
-    link,
-    topic,
-    description,
-    status: 'active',
-    lastPublished: null,
-    publishNote: null,
-  };
-  const updated = [...existing, group];
-  await saveGroups(updated);
-  return { added: true, total: updated.length, group };
+async function buildMaxWeekQueue() {
+  const all = await getAllGroups();
+  if (!all.length) {
+    console.log('[MaxPromo] База пуста, очередь не сформирована');
+    return [];
+  }
+
+  const used = await getUsedGroups();
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const recentIds = new Set(
+    used.filter((u) => new Date(u.usedAt).getTime() > thirtyDaysAgo).map((u) => u.chatId),
+  );
+
+  let available = all.filter((g) => !recentIds.has(g.chatId));
+
+  if (available.length < 7) {
+    console.log('[MaxPromo] Все сообщества охвачены — сброс истории использования');
+    await saveUsedGroups([]);
+    available = all;
+  }
+
+  const queue = available.slice(0, 14);
+  await saveWeekQueue(queue);
+  console.log(`[MaxPromo] Очередь на неделю: ${queue.length} сообществ`);
+  return queue;
 }
 
-// ─── Claude: генерация промо-поста для MAX ───────────────────────────────────
+// ─── ШАГ 3: генерация промо-поста ─────────────────────────────────────────────
 
-async function generatePromoPost(group) {
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+async function generateMaxPromoPost(group) {
+  await new Promise((r) => setTimeout(r, 3000));
 
   const name = group.name.slice(0, 40);
   const prompt = `Напиши пост 150 слов для MAX-сообщества "${name}".
-Боль: замечания ГПН или штрафы МЧС из-за ошибок проектирования пожарной безопасности.
-В конце упомяни max.ru/id351000349259_biz. Без хэштегов. Без рекламного тона.`;
+Аудитория: застройщики и заказчики строительства.
+Раскрой одну боль: замечания ГПН или штрафы МЧС из-за ошибок в проектировании пожарной безопасности.
+В конце добавь: "Пишите нам: @IPK_zayvki_bot или подписывайтесь: max.ru/id351000349259_biz"
+Без хэштегов. Без HTML тегов. Без рекламного тона. Завершённый текст.`;
 
   const response = await client.messages.create({
     model: MODEL,
-    max_tokens: 400,
+    max_tokens: 500,
     messages: [{ role: 'user', content: prompt }],
   });
 
-  return response.content
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim();
+  return response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+}
+
+// ─── Добавление вручную ───────────────────────────────────────────────────────
+
+async function addGroup(name, link, topic = '') {
+  const all = await getAllGroups();
+  if (all.some((g) => g.link === link)) return false;
+  const chatId = `manual_${Date.now()}`;
+  all.push({ id: `mg_${chatId}`, name, link, topic, chatId });
+  await saveAllGroups(all);
+  return true;
+}
+
+// ─── Публикация в MAX сообщество ─────────────────────────────────────────────
+
+async function publishToMaxGroup(group, text) {
+  if (!group.chatId || group.chatId.startsWith('manual_')) {
+    throw new Error('no_chat_id');
+  }
+  return maxRequest('POST', `/messages?chat_id=${encodeURIComponent(group.chatId)}`, { text });
 }
 
 module.exports = {
-  getGroups,
-  saveGroups,
-  mergeGroups,
+  getAllGroups,
+  getWeekQueue,
+  saveWeekQueue,
+  getUsedGroups,
+  markGroupUsed,
+  removeFromWeekQueue,
+  updateMaxPromoGroups,
+  buildMaxWeekQueue,
+  generateMaxPromoPost,
+  getMaxPromoPending,
+  setMaxPromoPending,
+  clearMaxPromoPending,
   addGroup,
-  searchGroups,
-  markGroupPublished,
-  getPromoPending,
-  setPromoPending,
-  clearPromoPending,
-  pickNextGroup,
-  generatePromoPost,
+  publishToMaxGroup,
 };

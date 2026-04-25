@@ -5,6 +5,8 @@ const { getFormatCounter, incrementFormatCounter, getPendingPost, getCaseDraft, 
 const { generateCasePost, generateFormatPost } = require('./agent');
 const { sendForApproval, startCaseCollection, sendDailyPromoForApproval } = require('./bot');
 const { updatePromoGroups, buildWeekQueue, validateWeekQueue, getWeekQueue, generatePromoPost } = require('./promo');
+const { sendDailyMaxPromoForApproval } = require('./max-commands');
+const { updateMaxPromoGroups, buildMaxWeekQueue, getWeekQueue: getMaxWeekQueue, generateMaxPromoPost } = require('./max-promo');
 
 /**
  * Каждые 2 дня в 10:00 по Москве генерируем пост.
@@ -158,6 +160,75 @@ function scheduleDailyPromoApproval() {
   console.log('[Scheduler] Ежедневный промо-пост на согласование: 9:20 МСК');
 }
 
+/**
+ * Каждый понедельник в 9:00 МСК — обновление базы MAX сообществ через MAX API.
+ */
+function scheduleMaxPromoGroupsUpdate() {
+  cron.schedule(
+    '0 9 * * 1',
+    async () => {
+      console.log('[Scheduler] Обновление базы MAX промо-сообществ...');
+      try {
+        await updateMaxPromoGroups();
+      } catch (err) {
+        console.error('[Scheduler] Ошибка updateMaxPromoGroups:', err);
+      }
+    },
+    { timezone: 'Europe/Moscow' },
+  );
+
+  console.log('[Scheduler] Обновление базы MAX сообществ: каждый понедельник в 9:00 МСК');
+}
+
+/**
+ * Каждый понедельник в 9:05 МСК — формирование MAX очереди на неделю.
+ */
+function scheduleMaxBuildWeekQueue() {
+  cron.schedule(
+    '5 9 * * 1',
+    async () => {
+      console.log('[Scheduler] Формирование MAX очереди на неделю...');
+      try {
+        await buildMaxWeekQueue();
+      } catch (err) {
+        console.error('[Scheduler] Ошибка buildMaxWeekQueue:', err);
+      }
+    },
+    { timezone: 'Europe/Moscow' },
+  );
+
+  console.log('[Scheduler] MAX очередь на неделю: каждый понедельник в 9:05 МСК');
+}
+
+/**
+ * Каждый день в 9:25 МСК — берём следующее MAX сообщество из очереди,
+ * генерируем промо-пост и отправляем менеджеру на согласование.
+ */
+function scheduleMaxDailyPromoApproval() {
+  cron.schedule(
+    '25 9 * * *',
+    async () => {
+      console.log('[Scheduler] Генерация ежедневного MAX промо-поста...');
+      try {
+        const queue = await getMaxWeekQueue();
+        if (!queue.length) {
+          console.log('[Scheduler] MAX очередь пуста, пропускаем.');
+          return;
+        }
+        const group = queue[0];
+        const postText = await generateMaxPromoPost(group);
+        await sendDailyMaxPromoForApproval(group, postText);
+        console.log(`[Scheduler] MAX промо-пост для "${group.name}" отправлен менеджеру.`);
+      } catch (err) {
+        console.error('[Scheduler] Ошибка генерации MAX промо-поста:', err);
+      }
+    },
+    { timezone: 'Europe/Moscow' },
+  );
+
+  console.log('[Scheduler] Ежедневный MAX промо-пост на согласование: 9:25 МСК');
+}
+
 function startScheduler(telegram) {
   schedulePostGeneration();
   scheduleCaseRequest();
@@ -165,6 +236,9 @@ function startScheduler(telegram) {
   scheduleBuildWeekQueue();
   scheduleValidateWeekQueue(telegram);
   scheduleDailyPromoApproval();
+  scheduleMaxPromoGroupsUpdate();
+  scheduleMaxBuildWeekQueue();
+  scheduleMaxDailyPromoApproval();
 }
 
 module.exports = { startScheduler };

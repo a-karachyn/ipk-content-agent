@@ -22,21 +22,23 @@ const {
   clearMaxCaseDraft,
 } = require('./redis');
 const { generateCasePost, generateNewsPost } = require('./agent');
-const { getPostCount, incrementPostCount, getCaseDraft } = require('./redis');
 const {
-  getGroups: getMaxPromoGroups,
-  mergeGroups: mergeMaxPromoGroups,
+  getAllGroups,
+  getWeekQueue,
+  markGroupUsed,
+  removeFromWeekQueue,
+  generateMaxPromoPost,
+  getMaxPromoPending,
+  setMaxPromoPending,
+  clearMaxPromoPending,
   addGroup: addMaxPromoGroup,
-  searchGroups: searchMaxPromoGroups,
-  getPromoPending: getMaxPromoPending,
-  setPromoPending: setMaxPromoPending,
-  clearPromoPending: clearMaxPromoPending,
-  pickNextGroup: pickNextMaxPromoGroup,
-  generatePromoPost: generateMaxPromoPost,
-  markGroupPublished: markMaxGroupPublished,
+  publishToMaxGroup,
 } = require('./max-promo');
 
 const MANAGER_ID = parseInt(process.env.MANAGER_CHAT_ID, 10);
+const PAGE_SIZE = 10;
+
+let _bot = null;
 
 // ─── Keyboards ────────────────────────────────────────────────────────────────
 
@@ -53,24 +55,66 @@ function maxApprovalKeyboard() {
 function maxPromoApprovalKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('✅ Опубликовать', 'max_promo_approve')],
+    [Markup.button.callback('✏️ Редактировать', 'max_promo_edit')],
+  ]);
+}
+
+function maxPromoDailyKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('✅ Одобрить', 'max_promo_daily_approve')],
     [
-      Markup.button.callback('✏️ Редактировать', 'max_promo_edit'),
-      Markup.button.callback('⏭️ Следующий канал', 'max_promo_next'),
+      Markup.button.callback('✏️ Редактировать', 'max_promo_daily_edit'),
+      Markup.button.callback('❌ Пропустить',    'max_promo_daily_skip'),
     ],
   ]);
 }
 
-function maxPromoPickKeyboard(groups) {
-  const rows = groups.map((g) => [
-    Markup.button.callback(
-      `${g.name}${g.topic ? ' · ' + g.topic : ''}`,
-      `max_promo_select:${g.id}`,
-    ),
-  ]);
-  return Markup.inlineKeyboard(rows);
+function pageKeyboard(page, total, prefix) {
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const buttons = [];
+  if (page > 0) buttons.push(Markup.button.callback('◀️ Предыдущие 10', `${prefix}:${page - 1}`));
+  if (page < totalPages - 1) buttons.push(Markup.button.callback('Следующие 10 ▶️', `${prefix}:${page + 1}`));
+  return buttons.length ? Markup.inlineKeyboard([buttons]) : undefined;
 }
 
-// ─── Отправка на согласование (используется при ручной генерации) ─────────────
+function formatGroupsPage(groups, page) {
+  const slice = groups.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  return slice.map((g) => `• <b>${g.name.slice(0, 50)}</b>\n  ${g.link}`).join('\n');
+}
+
+// ─── Публикация промо с авто-фолбэком на ручную ──────────────────────────────
+
+async function tryPublishAndNotify(pending) {
+  const bot = _bot;
+  const { text, group } = pending;
+  try {
+    await publishToMaxGroup(group, text);
+    await markGroupUsed(group);
+    await removeFromWeekQueue(group.chatId);
+    await clearMaxPromoPending();
+    await bot.telegram.sendMessage(
+      MANAGER_ID,
+      `✅ Пост опубликован в MAX: <b>${group.name}</b>\n${group.link}`,
+      { parse_mode: 'HTML' },
+    );
+  } catch (err) {
+    if (err.message === 'no_chat_id') {
+      await bot.telegram.sendMessage(
+        MANAGER_ID,
+        `⚠️ Бот не администратор «${group.name}». Скопируйте текст и опубликуйте вручную:\n\n${text}\n\n🔗 ${group.link}`,
+        { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Опубликовано вручную', 'max_promo_manual_done')]]) },
+      );
+    } else {
+      await bot.telegram.sendMessage(
+        MANAGER_ID,
+        `❌ Ошибка публикации в MAX (${err.message}). Скопируйте текст:\n\n${text}\n\n🔗 ${group.link}`,
+        { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Опубликовано вручную', 'max_promo_manual_done')]]) },
+      );
+    }
+  }
+}
+
+// ─── Отправка на согласование (ручная генерация) ─────────────────────────────
 
 async function sendMaxForApproval(bot, postText, postType) {
   await setMaxPendingPost({ text: postText, type: postType });
@@ -81,11 +125,24 @@ async function sendMaxForApproval(bot, postText, postType) {
   );
 }
 
+// ─── Ежедневный промо-пост менеджеру ─────────────────────────────────────────
+
+async function sendDailyMaxPromoForApproval(group, postText) {
+  if (!_bot) throw new Error('MAX bot не инициализирован — вызовите registerMaxHandlers первым');
+  await setMaxPromoPending({ text: postText, group, source: 'daily' });
+  await _bot.telegram.sendMessage(
+    MANAGER_ID,
+    `📣 <b>Ежедневный MAX промо-пост</b>\n<b>${group.name}</b>\n${group.link}\n\n${postText}`,
+    { parse_mode: 'HTML', ...maxPromoDailyKeyboard() },
+  );
+}
+
 // ─── Регистрация всех MAX обработчиков ───────────────────────────────────────
 
 function registerMaxHandlers(bot) {
+  _bot = bot;
 
-  // ── Callbacks: согласование поста ────────────────────────────────────────
+  // ── Callbacks: согласование контент-поста ────────────────────────────────
 
   bot.action('max_post_approve', async (ctx) => {
     await ctx.answerCbQuery();
@@ -119,7 +176,96 @@ function registerMaxHandlers(bot) {
     await ctx.reply('❌ MAX пост отклонён.');
   });
 
-  // ── Команды ──────────────────────────────────────────────────────────────
+  // ── Callbacks: промо-согласование (ручной /max_promo_post) ───────────────
+
+  bot.action('max_promo_approve', async (ctx) => {
+    await ctx.answerCbQuery();
+    const pending = await getMaxPromoPending();
+    if (!pending) return ctx.reply('Нет промо-поста MAX в очереди.');
+    await ctx.editMessageReplyMarkup(undefined);
+    await tryPublishAndNotify(pending);
+  });
+
+  bot.action('max_promo_edit', async (ctx) => {
+    await ctx.answerCbQuery();
+    await setMaxManagerState('editing_max_promo');
+    await ctx.editMessageReplyMarkup(undefined);
+    await ctx.reply('✏️ Отправьте отредактированный текст промо-поста MAX.\n\n/max_cancel — отменить.');
+  });
+
+  // ── Callbacks: ежедневный промо-поток ────────────────────────────────────
+
+  bot.action('max_promo_daily_approve', async (ctx) => {
+    await ctx.answerCbQuery();
+    const pending = await getMaxPromoPending();
+    if (!pending) return ctx.reply('Нет промо-поста MAX в очереди.');
+    await ctx.editMessageReplyMarkup(undefined);
+    await tryPublishAndNotify(pending);
+  });
+
+  bot.action('max_promo_daily_edit', async (ctx) => {
+    await ctx.answerCbQuery();
+    await setMaxManagerState('editing_max_promo');
+    await ctx.editMessageReplyMarkup(undefined);
+    await ctx.reply('✏️ Отправьте отредактированный текст промо-поста MAX.\n\n/max_cancel — отменить.');
+  });
+
+  bot.action('max_promo_daily_skip', async (ctx) => {
+    await ctx.answerCbQuery();
+    const pending = await getMaxPromoPending();
+    const excludeChatId = pending?.group?.chatId || null;
+
+    await clearMaxPromoPending();
+    await ctx.editMessageReplyMarkup(undefined);
+
+    const queue = await getWeekQueue();
+    const nextGroup = queue.find((g) => g.chatId !== excludeChatId) || null;
+    if (!nextGroup) {
+      return ctx.reply('Больше нет сообществ в очереди на эту неделю. Новая очередь — в следующий понедельник.');
+    }
+
+    await ctx.reply(`Генерирую пост для следующего сообщества: <b>${nextGroup.name}</b>...`, { parse_mode: 'HTML' });
+    try {
+      const postText = await generateMaxPromoPost(nextGroup);
+      await setMaxPromoPending({ text: postText, group: nextGroup, source: 'daily' });
+      await ctx.replyWithHTML(
+        `📣 <b>MAX промо-пост для ${nextGroup.name}</b>\n${nextGroup.link}\n\n${postText}`,
+        maxPromoDailyKeyboard(),
+      );
+    } catch (err) {
+      console.error('[MaxBot] max_promo_daily_skip error:', err);
+      await ctx.reply('Ошибка при генерации поста: ' + err.message);
+    }
+  });
+
+  bot.action('max_promo_manual_done', async (ctx) => {
+    await ctx.answerCbQuery();
+    const pending = await getMaxPromoPending();
+    if (pending?.group) {
+      await markGroupUsed(pending.group);
+      await removeFromWeekQueue(pending.group.chatId);
+    }
+    await clearMaxPromoPending();
+    await ctx.editMessageReplyMarkup(undefined);
+    await ctx.reply('✅ Зафиксировано как опубликованное вручную.');
+  });
+
+  // ── Pagination ────────────────────────────────────────────────────────────
+
+  bot.action(/^max_promo_list_page:(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const page = parseInt(ctx.match[1], 10);
+    const groups = await getAllGroups();
+    if (!groups.length) return ctx.reply('База сообществ MAX пуста.');
+
+    const text =
+      `📋 <b>Сообщества MAX (${groups.length})</b> — стр. ${page + 1}/${Math.ceil(groups.length / PAGE_SIZE)}\n\n` +
+      formatGroupsPage(groups, page);
+    const keyboard = pageKeyboard(page, groups.length, 'max_promo_list_page');
+    await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+  });
+
+  // ── Команды: контент ──────────────────────────────────────────────────────
 
   bot.command('max_help', async (ctx) => {
     if (ctx.from.id !== MANAGER_ID) return;
@@ -130,14 +276,13 @@ function registerMaxHandlers(bot) {
       `/max_case — запустить сбор данных для кейса\n` +
       `/max_status — состояние MAX агента\n\n` +
       `<b>Продвижение в MAX сообществах:</b>\n` +
-      `/max_promo — найти сообщества в MAX через MAX API\n` +
-      `/max_promo_add — добавить найденное MAX сообщество в базу\n` +
-      `/max_promo_post — сгенерировать промо-пост для следующего сообщества\n` +
-      `/max_promo_list — список сообществ с датами публикаций\n\n` +
+      `/max_promo — статус системы продвижения MAX\n` +
+      `/max_promo_list — список всех сообществ\n` +
+      `/max_promo_post — промо-пост для следующего сообщества\n` +
+      `/max_promo_add &lt;ссылка&gt; [название] — добавить сообщество вручную\n` +
+      `/max_promo_stats — статистика охвата\n\n` +
       `/max_cancel — отменить текущую операцию\n` +
-      `/max_help — этот список\n\n` +
-      `Посты: каждые 2 дня в 10:00 МСК (автоматически через max-content-agent).\n` +
-      `Запрос кейса: пн 9:00 МСК.`,
+      `/max_help — этот список`,
     );
   });
 
@@ -152,7 +297,6 @@ function registerMaxHandlers(bot) {
     await ctx.reply('Генерирую пост для MAX, подождите...');
 
     try {
-      // Используем счётчик max_content: (из max-content-agent)
       const { redis } = require('./redis');
       const rawCount = await redis.get('max_content:post_count');
       const count = parseInt(rawCount || '0', 10);
@@ -211,183 +355,106 @@ function registerMaxHandlers(bot) {
     await ctx.reply('MAX операция отменена.');
   });
 
-  // ── MAX Promo: поиск сообществ ────────────────────────────────────────────
+  // ── Команды: продвижение ──────────────────────────────────────────────────
 
   bot.command('max_promo', async (ctx) => {
     if (ctx.from.id !== MANAGER_ID) return;
-    await ctx.reply('Ищу сообщества в MAX по 15 ключевым словам параллельно...');
     try {
-      const found = await searchMaxPromoGroups();
-      const { added, total } = await mergeMaxPromoGroups(found);
-      const lines = found
-        .slice(0, 20)
-        .map((g) => `• <b>${g.name}</b>\n  ${g.link}`)
-        .join('\n');
-      const more = found.length > 20 ? `\n...и ещё ${found.length - 20}` : '';
+      const [all, queue] = await Promise.all([getAllGroups(), getWeekQueue()]);
       await ctx.replyWithHTML(
-        `🔍 <b>Поиск завершён</b>\n\nНайдено: ${found.length}, добавлено новых: ${added}, всего в базе: ${total}\n\n${lines}${more}\n\nДля генерации промо-поста: /max_promo_post`,
+        `📊 <b>MAX Promo-система</b>\n\n` +
+        `Всего сообществ в базе: ${all.length}\n` +
+        `В очереди на неделю: ${queue.length}\n\n` +
+        `/max_promo_list — список всех сообществ\n` +
+        `/max_promo_post — сгенерировать промо-пост вручную\n` +
+        `/max_promo_add &lt;ссылка&gt; — добавить сообщество\n` +
+        `/max_promo_stats — статистика`,
       );
     } catch (err) {
-      console.error('[MaxBot] /max_promo error:', err);
-      await ctx.reply('Ошибка при поиске в MAX: ' + err.message);
+      await ctx.reply('Ошибка: ' + err.message);
     }
   });
 
-  // ── MAX Promo: добавить сообщество вручную ────────────────────────────────
-
-  bot.command('max_promo_add', async (ctx) => {
+  bot.command('max_promo_list', async (ctx) => {
     if (ctx.from.id !== MANAGER_ID) return;
-    await setMaxManagerState('adding_max_promo');
-    await ctx.reply(
-      '➕ Отправьте данные сообщества MAX в формате:\n\n' +
-      '<code>Название\nmax.ru/ссылка\nКатегория (необязательно)</code>\n\n' +
-      '/max_cancel — отменить',
-      { parse_mode: 'HTML' },
-    );
-  });
+    const groups = await getAllGroups();
+    if (!groups.length) {
+      return ctx.reply('База сообществ MAX пуста. Поиск запускается каждый понедельник в 9:00.');
+    }
 
-  // ── MAX Promo: генерация поста ────────────────────────────────────────────
+    const page = 0;
+    const text =
+      `📋 <b>Сообщества MAX (${groups.length})</b>\n\n` +
+      formatGroupsPage(groups, page);
+    const keyboard = pageKeyboard(page, groups.length, 'max_promo_list_page');
+    await ctx.replyWithHTML(text, keyboard);
+  });
 
   bot.command('max_promo_post', async (ctx) => {
     if (ctx.from.id !== MANAGER_ID) return;
 
-    const groups = await getMaxPromoGroups();
-    if (!groups.length) {
-      return ctx.reply('База сообществ MAX пуста. Сначала запустите /max_promo для поиска.');
+    const maxState = await getMaxManagerState();
+    if (maxState !== 'idle') {
+      return ctx.reply(`Сейчас активна MAX операция (${maxState}). Сначала /max_cancel.`);
     }
 
-    const active = groups.filter((g) => g.status === 'active');
-    if (!active.length) {
-      return ctx.reply('Нет активных сообществ. Проверьте список через /max_promo_list.');
+    const queue = await getWeekQueue();
+    if (!queue.length) {
+      return ctx.reply('Очередь на неделю пуста. Поиск и формирование очереди — каждый понедельник в 9:00–9:05.');
     }
 
-    // Сортируем по дате последней публикации (давние — первые), берём 5
-    const candidates = active
-      .sort((a, b) => {
-        if (!a.lastPublished && !b.lastPublished) return 0;
-        if (!a.lastPublished) return -1;
-        if (!b.lastPublished) return 1;
-        return new Date(a.lastPublished) - new Date(b.lastPublished);
-      })
-      .slice(0, 5);
-
-    const lines = candidates
-      .map((g, i) => {
-        const date = g.lastPublished
-          ? new Date(g.lastPublished).toLocaleDateString('ru-RU')
-          : 'не публиковалось';
-        return `${i + 1}. <b>${g.name}</b>${g.topic ? ' · ' + g.topic : ''}\n   ${g.link || '—'} · ${date}`;
-      })
-      .join('\n\n');
-
-    await ctx.replyWithHTML(
-      `📣 <b>Выберите сообщество для промо-поста:</b>\n\n${lines}`,
-      maxPromoPickKeyboard(candidates),
-    );
-  });
-
-  // ── MAX Promo: список сообществ ───────────────────────────────────────────
-
-  bot.command('max_promo_list', async (ctx) => {
-    if (ctx.from.id !== MANAGER_ID) return;
-    const groups = await getMaxPromoGroups();
-    if (!groups.length) {
-      return ctx.reply('База сообществ MAX пуста. Запустите /max_promo для поиска.');
-    }
-
-    const formatDate = (iso) => {
-      if (!iso) return 'не публиковалось';
-      const d = new Date(iso);
-      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    };
-
-    const lines = groups.map((g, i) => {
-      const status = g.status === 'active' ? '🟢' : '⏸️';
-      return `${status} ${i + 1}. <b>${g.name}</b>\n   ${g.link}\n   <i>${g.topic}</i>\n   Последняя публикация: ${formatDate(g.lastPublished)}`;
-    });
-
-    await ctx.replyWithHTML(
-      `📋 <b>Сообщества MAX для продвижения (${groups.length})</b>\n\n` + lines.join('\n\n'),
-    );
-  });
-
-  // ── MAX Promo: callbacks ──────────────────────────────────────────────────
-
-  bot.action(/^max_promo_select:(.+)$/, async (ctx) => {
-    await ctx.answerCbQuery();
-    const groupId = ctx.match[1];
-
-    const groups = await getMaxPromoGroups();
-    const group = groups.find((g) => g.id === groupId);
-    if (!group) return ctx.reply('Сообщество не найдено в базе.');
-
-    await ctx.editMessageReplyMarkup(undefined);
-    await ctx.reply(`Генерирую промо-пост для «${group.name}»...`);
+    const group = queue[0];
+    await ctx.reply(`Генерирую промо-пост для «<b>${group.name}</b>»...`, { parse_mode: 'HTML' });
 
     try {
       const postText = await generateMaxPromoPost(group);
       await setMaxPromoPending({ text: postText, group });
       await ctx.replyWithHTML(
-        `📣 <b>${group.name}</b>\n${group.link || ''}\n\n${postText}`,
+        `📣 <b>MAX промо-пост для ${group.name}</b>\n${group.link}\n\n${postText}`,
         maxPromoApprovalKeyboard(),
       );
     } catch (err) {
-      console.error('[MaxBot] max_promo_select error:', err);
+      console.error('[MaxBot] /max_promo_post error:', err);
       await ctx.reply('Ошибка при генерации промо-поста: ' + err.message);
     }
   });
 
-  bot.action('max_promo_approve', async (ctx) => {
-    await ctx.answerCbQuery();
-    const pending = await getMaxPromoPending();
-    if (!pending) return ctx.reply('Нет промо-поста MAX в очереди.');
-
-    await setMaxManagerState('confirming_max_promo_publish');
-    await ctx.editMessageReplyMarkup(undefined);
-    await ctx.reply(
-      `✅ После публикации напишите: в каком сообществе MAX опубликовали?\n(Название или ссылку)\n\n/max_cancel — отменить`,
-    );
-  });
-
-  bot.action('max_promo_edit', async (ctx) => {
-    await ctx.answerCbQuery();
-    await setMaxManagerState('editing_max_promo');
-    await ctx.editMessageReplyMarkup(undefined);
-    await ctx.reply('✏️ Отправьте отредактированный текст промо-поста MAX.\n\n/max_cancel — отменить.');
-  });
-
-  bot.action('max_promo_next', async (ctx) => {
-    await ctx.answerCbQuery();
-    const pending = await getMaxPromoPending();
-    const excludeId = pending?.group?.id || null;
-
-    const groups = await getMaxPromoGroups();
-    const active = groups.filter((g) => g.status === 'active' && g.id !== excludeId);
-    if (!active.length) {
-      await clearMaxPromoPending();
-      return ctx.reply('Больше нет активных сообществ MAX для выбора.');
+  bot.command('max_promo_add', async (ctx) => {
+    if (ctx.from.id !== MANAGER_ID) return;
+    const args = ctx.message.text.replace('/max_promo_add', '').trim().split(/\s+/);
+    const link = args[0];
+    const name = args.slice(1).join(' ') || undefined;
+    if (!link) {
+      return ctx.reply('Укажите ссылку: /max_promo_add max.ru/channel [Название]');
     }
-
-    const candidates = active
-      .sort((a, b) => {
-        if (!a.lastPublished && !b.lastPublished) return 0;
-        if (!a.lastPublished) return -1;
-        if (!b.lastPublished) return 1;
-        return new Date(a.lastPublished) - new Date(b.lastPublished);
-      })
-      .slice(0, 5);
-
-    await ctx.editMessageReplyMarkup(undefined);
-    await ctx.replyWithHTML(
-      `📣 <b>Выберите следующее сообщество:</b>`,
-      maxPromoPickKeyboard(candidates),
+    const added = await addMaxPromoGroup(name || link, link);
+    await ctx.reply(added
+      ? `✅ Сообщество добавлено: ${link}`
+      : `Сообщество уже есть в базе: ${link}`,
     );
+  });
+
+  bot.command('max_promo_stats', async (ctx) => {
+    if (ctx.from.id !== MANAGER_ID) return;
+    try {
+      const { getUsedGroups } = require('./max-promo');
+      const [all, queue, used] = await Promise.all([getAllGroups(), getWeekQueue(), getUsedGroups()]);
+      const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      const recentUsed = used.filter((u) => new Date(u.usedAt).getTime() > thirtyDaysAgo);
+      await ctx.replyWithHTML(
+        `📈 <b>Статистика MAX продвижения</b>\n\n` +
+        `Всего сообществ: ${all.length}\n` +
+        `Очередь на неделю: ${queue.length}\n` +
+        `Использовано за 30 дней: ${recentUsed.length}\n` +
+        `Всего использовано: ${used.length}`,
+      );
+    } catch (err) {
+      await ctx.reply('Ошибка: ' + err.message);
+    }
   });
 }
 
 // ─── Обработчик текстовых сообщений для MAX state machine ────────────────────
-// Вызывается из bot.on('text') в bot.js ПЕРЕД обработкой Telegram-состояний.
-// Возвращает true, если сообщение было обработано.
 
 async function handleMaxText(ctx, bot) {
   if (ctx.from.id !== MANAGER_ID) return false;
@@ -433,52 +500,6 @@ async function handleMaxText(ctx, bot) {
     return true;
   }
 
-  if (maxState === 'adding_max_promo') {
-    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-    if (lines.length < 2) {
-      await ctx.reply('Нужно минимум 2 строки: название и ссылка. Попробуйте ещё раз или /max_cancel.');
-      return true;
-    }
-    const [name, link, topic = ''] = lines;
-    const result = await addMaxPromoGroup(name, link, topic);
-    await setMaxManagerState('idle');
-    if (!result.added) {
-      await ctx.reply(`⚠️ Сообщество с этой ссылкой уже есть в базе. Всего: ${result.total}`);
-    } else {
-      await ctx.replyWithHTML(
-        `✅ Добавлено: <b>${name}</b>\n${link}\nВсего в базе: ${result.total}\n\nДля генерации поста: /max_promo_post`,
-      );
-    }
-    return true;
-  }
-
-  if (maxState === 'editing_max_promo') {
-    const pending = await getMaxPromoPending();
-    if (!pending) {
-      await setMaxManagerState('idle');
-      await ctx.reply('Нет MAX промо-поста для редактирования.');
-      return true;
-    }
-    await setMaxPromoPending({ ...pending, text });
-    await setMaxManagerState('idle');
-    await ctx.replyWithHTML(
-      `📝 <b>Обновлённый промо-пост MAX</b>\n\n${text}`,
-      maxPromoApprovalKeyboard(),
-    );
-    return true;
-  }
-
-  if (maxState === 'confirming_max_promo_publish') {
-    const pending = await getMaxPromoPending();
-    if (pending?.group) {
-      await markMaxGroupPublished(pending.group.id, text);
-    }
-    await clearMaxPromoPending();
-    await setMaxManagerState('idle');
-    await ctx.reply(`✅ Отмечено как опубликованное в: ${text}`);
-    return true;
-  }
-
   if (maxState === 'max_collecting_result') {
     await setMaxCaseField('result', text);
     await setMaxManagerState('idle');
@@ -495,7 +516,32 @@ async function handleMaxText(ctx, bot) {
     return true;
   }
 
+  if (maxState === 'editing_max_promo') {
+    const pending = await getMaxPromoPending();
+    if (!pending) {
+      await setMaxManagerState('idle');
+      await ctx.reply('Нет MAX промо-поста для редактирования.');
+      return true;
+    }
+    await setMaxPromoPending({ ...pending, text });
+    await setMaxManagerState('idle');
+    const keyboard = pending.source === 'daily'
+      ? Markup.inlineKeyboard([
+          [Markup.button.callback('✅ Одобрить', 'max_promo_daily_approve')],
+          [Markup.button.callback('✏️ Редактировать', 'max_promo_daily_edit')],
+        ])
+      : Markup.inlineKeyboard([
+          [Markup.button.callback('✅ Опубликовать', 'max_promo_approve')],
+          [Markup.button.callback('✏️ Редактировать', 'max_promo_edit')],
+        ]);
+    await ctx.replyWithHTML(
+      `📝 <b>Обновлённый MAX промо-пост для ${pending.group.name}</b>\n${pending.group.link}\n\n${text}`,
+      keyboard,
+    );
+    return true;
+  }
+
   return false;
 }
 
-module.exports = { registerMaxHandlers, handleMaxText };
+module.exports = { registerMaxHandlers, handleMaxText, sendDailyMaxPromoForApproval };
