@@ -4,7 +4,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { SYSTEM_PROMPT, casePostPrompt, newsPostPrompt, normativePostPrompt, trendPostPrompt, historyPostPrompt } = require('./prompts');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = process.env.MODEL || 'claude-sonnet-4-6';
+const MODEL = process.env.MODEL || 'claude-haiku-4-5-20251001';
 
 async function callClaudeSimple(userPrompt) {
   await new Promise((resolve) => setTimeout(resolve, 3000));
