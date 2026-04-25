@@ -10,11 +10,51 @@ const GROUPS_KEY = 'promo:groups';
 const PENDING_KEY = 'promo:pending_post';
 const APPROVED_KEY = 'promo:approved_post';
 
+// ─── Статический сид групп ────────────────────────────────────────────────────
+
+const STATIC_GROUPS = [
+  { name: 'ПТОшники & ПРОектировщики',          link: 'https://t.me/pro_pto',              category: 'Проектировщики' },
+  { name: 'Проектировщики РФ',                   link: 'https://t.me/proektirovshiki',      category: 'Проектировщики' },
+  { name: 'Проектирование и экспертиза',          link: 'https://t.me/proekt_expertiza',     category: 'Проектировщики' },
+  { name: 'Проектировщики инженерных систем',     link: 'https://t.me/inzh_proekt',          category: 'Проектировщики' },
+  { name: 'BIM проектирование Россия',            link: 'https://t.me/RevitoBIM',            category: 'BIM проектирование' },
+  { name: 'Архитекторы и проектировщики',         link: 'https://t.me/arch_proekt',          category: 'Проектировщики' },
+  { name: 'Проектная документация и экспертиза',  link: 'https://t.me/proekt_docs',          category: 'Проектировщики' },
+  { name: 'Инженерное проектирование',            link: 'https://t.me/engineering_design',   category: 'Проектировщики' },
+  { name: 'Технический заказчик',                 link: 'https://t.me/tech_zakazchik',       category: 'Технадзор' },
+  { name: 'Строительный бизнес РФ',              link: 'https://t.me/stroybiz_rf',          category: 'Строители' },
+  { name: 'Девелопмент и стройка',               link: 'https://t.me/development_stroy',    category: 'Девелоперы' },
+  { name: 'Коммерческая недвижимость СПб',        link: 'https://t.me/commercial_spb',       category: 'Девелоперы' },
+  { name: 'Промышленное строительство',           link: 'https://t.me/industrial_build',     category: 'Промышленность' },
+  { name: 'Госзакупки строительство',             link: 'https://t.me/goszakupki_build',     category: 'Тендеры' },
+  { name: 'Недвижимость СПб чат',                link: 'https://t.me/nedvizo_spb',          category: 'Недвижимость' },
+  { name: 'Строители РФ чат',                    link: 'https://t.me/stroiteli_rf_chat',    category: 'Строители' },
+  { name: 'Тендеры и закупки строительство',      link: 'https://t.me/zakupkiChat',          category: 'Тендеры' },
+  { name: 'Инвесторы в недвижимость СПб',         link: 'https://t.me/invest_spb_realty',    category: 'Инвесторы' },
+  { name: 'Управление строительными проектами',   link: 'https://t.me/pm_construction',      category: 'Технадзор' },
+  { name: 'Пожарная безопасность зданий',         link: 'https://t.me/fire_safety_ru',       category: 'Пожарная безопасность' },
+];
+
 // ─── Redis: база групп ────────────────────────────────────────────────────────
 
 async function getGroups() {
   const data = await redis.get(GROUPS_KEY);
-  return data ? JSON.parse(data) : [];
+  if (data) return JSON.parse(data);
+
+  // Первый запуск — заполняем базу из статического сида
+  const seeded = STATIC_GROUPS.map((g, i) => ({
+    id: `static_${i}`,
+    name: g.name,
+    link: g.link,
+    topic: g.category,
+    description: '',
+    status: 'active',
+    lastPublished: null,
+    publishNote: null,
+  }));
+  await saveGroups(seeded);
+  console.log(`[Promo] База инициализирована из STATIC_GROUPS: ${seeded.length} групп`);
+  return seeded;
 }
 
 async function saveGroups(groups) {
