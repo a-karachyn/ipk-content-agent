@@ -1,7 +1,6 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { SYSTEM_PROMPT } = require('./prompts');
 const { redis } = require('./redis');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -199,17 +198,17 @@ async function searchGroups() {
 // ─── Claude: генерация промо-поста ───────────────────────────────────────────
 
 async function generatePromoPost(group) {
-  const prompt = `Напиши экспертный пост (600–900 символов) для Telegram-группы "${group.name}" (тема: ${group.topic}).
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+
+  const name = group.name.slice(0, 40);
+  const prompt = `Напиши пост 150–200 слов для Telegram-группы "${name}".
 Аудитория: застройщики и заказчики строительства.
-Тема: почему экономия на проектировании пожарной безопасности срывает сдачу объекта.
-Раскрой одну боль: замечания ГПН/экспертизы, штрафы МЧС или риски при пожаре.
-В конце (2–3 строки) упомяни @ipk_proekt и @IPK_zayvki_bot.
-Без хэштегов. Без рекламного тона. Не начинай с названия компании.`;
+Раскрой одну боль: замечания ГПН или штрафы МЧС из-за ошибок в проектировании пожарной безопасности.
+В конце упомяни @ipk_proekt и @IPK_zayvki_bot. Без хэштегов. Без рекламного тона.`;
 
   const response = await client.messages.create({
     model: MODEL,
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    max_tokens: 300,
     messages: [{ role: 'user', content: prompt }],
   });
 
