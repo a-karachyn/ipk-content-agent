@@ -231,12 +231,60 @@ async function removeGroup(linkQuery) {
   return groups.length - filtered.length;
 }
 
+// Извлекает username из ссылки вида t.me/name или https://t.me/name
+function extractUsername(link) {
+  const clean = link.replace(/^https?:\/\//, '').replace(/^t\.me\//, '');
+  const username = clean.split('/')[0].split('?')[0].trim();
+  return username ? `@${username}` : null;
+}
+
+/**
+ * Проверяет каждую группу через Telegram API.
+ * Принимает bot.telegram чтобы избежать циклического импорта.
+ * Удаляет недоступные и приватные группы, возвращает статистику.
+ */
+async function validateGroups(telegram) {
+  const groups = await getGroups();
+  const valid = [];
+  let removed = 0;
+
+  for (const group of groups) {
+    const username = extractUsername(group.link || '');
+    if (!username) {
+      console.log(`[Promo] Пропуск (нет username): ${group.link}`);
+      removed++;
+      continue;
+    }
+
+    try {
+      const chat = await telegram.getChat(username);
+      if (chat.type === 'private') {
+        console.log(`[Promo] Удалена приватная: ${group.link}`);
+        removed++;
+      } else {
+        valid.push(group);
+      }
+    } catch (err) {
+      console.log(`[Promo] Удалена недоступная (${err.message}): ${group.link}`);
+      removed++;
+    }
+
+    // Пауза между запросами чтобы не превысить rate limit Telegram API
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  await saveGroups(valid);
+  console.log(`[Promo] Валидация завершена: проверено ${groups.length}, удалено ${removed}, осталось ${valid.length}`);
+  return { total: groups.length, removed, remaining: valid.length };
+}
+
 module.exports = {
   getGroups,
   saveGroups,
   mergeGroups,
   markGroupPublished,
   removeGroup,
+  validateGroups,
   getPromoPending,
   setPromoPending,
   clearPromoPending,

@@ -28,6 +28,7 @@ const {
   searchGroups,
   generatePromoPost,
   removeGroup,
+  validateGroups,
 } = require('./promo');
 
 const { registerMaxHandlers, handleMaxText } = require('./max-commands');
@@ -207,6 +208,7 @@ bot.command('help', async (ctx) => {
     `/promo — найти профильные Telegram-группы через AI\n` +
     `/promo_post — сгенерировать промо-пост для следующей группы\n` +
     `/promo_list — список групп с датами публикаций\n` +
+    `/promo_validate — проверить группы на доступность\n` +
     `/promo_remove <ссылка> — удалить группу из базы\n\n` +
     `/cancel — отменить текущую операцию\n` +
     `/help — этот список\n\n` +
@@ -268,10 +270,13 @@ bot.command('promo', async (ctx) => {
     const { added, total } = await mergeGroups(found);
     await setPromoSearchCache(found);
 
+    await ctx.reply('Проверяю доступность групп через Telegram API...');
+    const { removed, remaining } = await validateGroups(bot.telegram);
+
     const page = 0;
     const text =
       `🔍 <b>Поиск завершён</b>\n` +
-      `Найдено: ${found.length}, добавлено новых: ${added}, всего в базе: ${total}\n\n` +
+      `Найдено: ${found.length}, добавлено: ${added}, удалено закрытых: ${removed}, в базе: ${remaining}\n\n` +
       formatGroupsPage(found, page) +
       `\n\nДля генерации промо-поста: /promo_post`;
     const keyboard = pageKeyboard(page, found.length, 'promo_search_page');
@@ -354,6 +359,21 @@ bot.action(/^promo_list_page:(\d+)$/, async (ctx) => {
     formatGroupsPage(groups, page);
   const keyboard = pageKeyboard(page, groups.length, 'promo_list_page');
   await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+});
+
+bot.command('promo_validate', async (ctx) => {
+  if (ctx.from.id !== MANAGER_ID) return;
+  const groups = await getGroups();
+  if (!groups.length) return ctx.reply('База групп пуста.');
+
+  await ctx.reply(`Проверяю ${groups.length} групп через Telegram API, подождите...`);
+  try {
+    const { total, removed, remaining } = await validateGroups(bot.telegram);
+    await ctx.reply(`✅ Проверено: ${total}, удалено закрытых: ${removed}, осталось: ${remaining}`);
+  } catch (err) {
+    console.error('[Bot] /promo_validate error:', err);
+    await ctx.reply('Ошибка при валидации: ' + err.message);
+  }
 });
 
 bot.command('promo_remove', async (ctx) => {
