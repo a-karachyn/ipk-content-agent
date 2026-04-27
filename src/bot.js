@@ -196,7 +196,8 @@ bot.command('help', async (ctx) => {
     `/promo_add &lt;ссылка&gt; [название] — добавить группу\n` +
     `/promo_remove &lt;ссылка&gt; — удалить группу из базы\n` +
     `/promo_validate — проверить очередь на доступность\n` +
-    `/promo_stats — статистика использования\n\n` +
+    `/promo_stats — статистика использования\n` +
+    `/promo_build — принудительно пересобрать очередь и отправить промо на согласование\n\n` +
     `/cancel — отменить текущую операцию\n` +
     `/help — этот список\n\n` +
     `Посты: каждые 2 дня в 10:00 МСК. Запрос кейса: пн 9:00 МСК.`,
@@ -384,6 +385,34 @@ bot.command('promo_remove', async (ctx) => {
     return ctx.reply(`Группа не найдена в базе: ${arg}`);
   }
   await ctx.reply(`✅ Удалено групп: ${deleted} (совпадение по "${arg}")`);
+});
+
+bot.command('promo_build', async (ctx) => {
+  if (ctx.from.id !== MANAGER_ID) return;
+
+  await ctx.reply('🔄 Формирую очередь на неделю...');
+  try {
+    await buildWeekQueue();
+  } catch (err) {
+    console.error('[Bot] /promo_build buildWeekQueue error:', err);
+    return ctx.reply('Ошибка при формировании очереди: ' + err.message);
+  }
+
+  const queue = await getWeekQueue();
+  if (!queue.length) {
+    return ctx.reply('Очередь пуста — все группы на кулдауне или база пустая.');
+  }
+
+  await ctx.reply(`✅ Очередь сформирована (${queue.length} групп). Генерирую промо-пост...`);
+
+  try {
+    const group = queue[0];
+    const postText = await generatePromoPost(group);
+    await sendDailyPromoForApproval(group, postText);
+  } catch (err) {
+    console.error('[Bot] /promo_build sendDailyPromoForApproval error:', err);
+    await ctx.reply('Очередь готова, но ошибка при генерации промо-поста: ' + err.message);
+  }
 });
 
 // ─── Callbacks: промо-согласование ────────────────────────────────────────────
