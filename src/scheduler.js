@@ -232,13 +232,17 @@ function scheduleMaxDailyPromoApproval() {
 function startScheduler(telegram) {
   schedulePostGeneration();
   scheduleCaseRequest();
-  schedulePromoGroupsUpdate();
-  scheduleBuildWeekQueue();
-  scheduleValidateWeekQueue(telegram);
-  scheduleDailyPromoApproval();
-  scheduleMaxPromoGroupsUpdate();
-  scheduleMaxBuildWeekQueue();
-  scheduleMaxDailyPromoApproval();
+
+  // ПРОМО-АГЕНТ ОТКЛЮЧЁН (28.04.2026)
+  // Холодные посты в чужих группах не эффективны для B2B.
+  // Заменяем на таргетированную рекламу ВКонтакте.
+  // schedulePromoGroupsUpdate();
+  // scheduleBuildWeekQueue();
+  // scheduleValidateWeekQueue(telegram);
+  // scheduleDailyPromoApproval();
+  // scheduleMaxPromoGroupsUpdate();
+  // scheduleMaxBuildWeekQueue();
+  // scheduleMaxDailyPromoApproval();
 }
 
 module.exports = { startScheduler };
