@@ -9,13 +9,13 @@ const { sendDailyMaxPromoForApproval } = require('./max-commands');
 const { updateMaxPromoGroups, buildMaxWeekQueue, getWeekQueue: getMaxWeekQueue, generateMaxPromoPost } = require('./max-promo');
 
 /**
- * Каждые 2 дня в 10:00 по Москве генерируем пост.
+ * Каждый день в 10:00 по Москве генерируем пост.
  * Если есть данные кейса — публикуем кейс.
  * Иначе чередуем три формата: 1-НОРМАТИВ → 2-ТРЕНДЫ → 3-ИСТОРИЯ → 1...
  */
 function schedulePostGeneration() {
   cron.schedule(
-    '0 10 */2 * *',
+    '0 10 * * *',
     async () => {
       console.log('[Scheduler] Запуск генерации поста...');
 
@@ -47,7 +47,7 @@ function schedulePostGeneration() {
     { timezone: 'Europe/Moscow' },
   );
 
-  console.log('[Scheduler] Генерация постов: каждые 2 дня в 10:00 МСК (Норматив→Тренды→История)');
+  console.log('[Scheduler] Генерация постов: каждый день в 10:00 МСК (Норматив→Тренды→История)');
 }
 
 /**
