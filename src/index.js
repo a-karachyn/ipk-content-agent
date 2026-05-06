@@ -4,7 +4,7 @@ require('dotenv').config();
 
 const express = require('express');
 const { bot } = require('./bot');
-const { startScheduler } = require('./scheduler');
+const { startScheduler, triggerPostGeneration } = require('./scheduler');
 const { redis } = require('./redis');
 
 const PORT = process.env.PORT || 3000;
@@ -34,6 +34,23 @@ async function main() {
   });
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+  // Внешний триггер генерации поста (вызывается cron-job.org в 10:00 МСК)
+  app.post('/trigger/generate', async (req, res) => {
+    const secret = process.env.TRIGGER_SECRET;
+    if (secret && req.headers['x-trigger-secret'] !== secret) {
+      console.warn('[Trigger] Неверный секрет, запрос отклонён.');
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    try {
+      const result = await triggerPostGeneration();
+      console.log('[Trigger] Генерация завершена:', result);
+      res.json(result);
+    } catch (err) {
+      console.error('[Trigger] Ошибка генерации:', err);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
 
   app.listen(PORT, () => {
     console.log(`[App] Express слушает порт ${PORT}`);

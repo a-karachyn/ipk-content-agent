@@ -245,4 +245,36 @@ function startScheduler(telegram) {
   // scheduleMaxDailyPromoApproval();
 }
 
-module.exports = { startScheduler };
+
+/**
+ * Ручной триггер генерации поста — для вызова через HTTP endpoint.
+ * Используется cron-job.org вместо внутреннего node-cron.
+ */
+async function triggerPostGeneration() {
+  console.log('[Scheduler] Внешний триггер: запуск генерации поста...');
+
+  const pending = await getPendingPost();
+  if (pending) {
+    console.log('[Scheduler] Пост уже ожидает согласования, генерация пропущена.');
+    return { skipped: true, reason: 'pending_post' };
+  }
+
+  const draft = await getCaseDraft();
+  if (draft && draft.task && draft.solution && draft.result) {
+    console.log('[Scheduler] Генерирую кейс из сохранённых данных...');
+    const text = await generateCasePost(draft.task, draft.solution, draft.result);
+    await clearCaseDraft();
+    await sendForApproval(text, 'case');
+    return { ok: true, type: 'case' };
+  } else {
+    const counter = await getFormatCounter();
+    const format = (counter % 3) + 1;
+    await incrementFormatCounter();
+    console.log(`[Scheduler] Генерирую пост формата ${format} (${['', 'Норматив', 'Тренды', 'История'][format]})...`);
+    const text = await generateFormatPost(format);
+    await sendForApproval(text, `format_${format}`);
+    return { ok: true, type: `format_${format}` };
+  }
+}
+
+module.exports = { startScheduler, triggerPostGeneration };
